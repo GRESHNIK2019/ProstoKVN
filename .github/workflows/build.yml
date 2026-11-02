@@ -1,0 +1,22 @@
+﻿name: Build ProstoKVN
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  compile:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build Windows client and updater
+        shell: pwsh
+        run: |
+          dotnet build .\ProstoKVN\ProstoKVN.csproj -c Release
+          dotnet build .\Updater\ProstoKVN.Updater.csproj -c Release
+          dotnet build .\SmokeTest\SmokeTest.csproj -c Release

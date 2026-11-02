@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>ProstoKVN</AssemblyName>
+    <RootNamespace>ProstoKVN</RootNamespace>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <Version>0.29.1</Version>
+    <AssemblyVersion>0.29.1.0</AssemblyVersion>
+    <FileVersion>0.29.1.0</FileVersion>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,289 @@
+﻿<Window x:Class="ProstoKVN.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:ProstoKVN"
+ Title="ProstoKVN" Height="570" Width="890" MinWidth="750" MinHeight="485"
+ Background="{DynamicResource ThemeBgF3F6F2}" Foreground="{DynamicResource ThemeFg193B3E}" FontFamily="Segoe UI Variable" WindowStartupLocation="CenterScreen">
+<Window.Resources>
+ <ResourceDictionary>
+  <ResourceDictionary.MergedDictionaries><ResourceDictionary Source="Themes/PaletteLight.xaml"/><ResourceDictionary Source="Themes/StudioTheme.xaml"/></ResourceDictionary.MergedDictionaries>
+ </ResourceDictionary>
+</Window.Resources>
+<Grid Background="{DynamicResource ThemeBgF3F6F2}">
+ <Grid.RowDefinitions><RowDefinition Height="75"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+ <Border Grid.Row="0" BorderBrush="{DynamicResource ThemeBorderD6E3DC}" BorderThickness="0,0,0,1" Background="{DynamicResource ThemeBgFFFFFF}">
+  <Grid Margin="27,0,27,0">
+   <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+   <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+    <Border Width="36" Height="36" CornerRadius="11" Background="{DynamicResource ThemeBg1C615B}" Margin="0,0,11,0">
+     <Grid>
+      <Ellipse Width="19" Height="19" Stroke="{DynamicResource ThemeStrokeBFECD5}" StrokeThickness="2.4"/>
+      <Ellipse Width="7" Height="7" Fill="{DynamicResource ThemeFillBFECD5}"/>
+      <Border Width="2.4" Height="8" Background="{DynamicResource ThemeBgBFECD5}" VerticalAlignment="Top" Margin="0,6,0,0"/>
+     </Grid>
+    </Border>
+    <TextBlock FontFamily="Bahnschrift" FontWeight="SemiBold" FontSize="25" VerticalAlignment="Center">
+     <Run Text="Prosto" Foreground="{DynamicResource ThemeFg173A3F}"/><Run Text="KVN" Foreground="{DynamicResource ThemeFg277B6E}"/>
+    </TextBlock>
+    <Border Width="1" Height="21" Background="{DynamicResource ThemeBgDAE6DF}" Margin="15,0,15,0" VerticalAlignment="Center"/>
+    <TextBlock Text="Защита без лишних действий" Foreground="{DynamicResource ThemeFg6A837F}" FontSize="12" VerticalAlignment="Center"/>
+   </StackPanel>
+   <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+    <Button x:Name="ThemeButton" Content="☾ Тёмная" Click="ThemeButton_Click" Padding="12,7" Margin="0,0,17,0"
+      ToolTip="Переключить светлую и тёмную тему без переподключения VPN" Background="{DynamicResource ThemeBgE1EEE6}"
+      Foreground="{DynamicResource ThemeFg245950}" BorderBrush="{DynamicResource ThemeBorderCDDDD5}"/>
+    <TextBlock x:Name="VersionText" Text="Windows" FontSize="12" FontFamily="Bahnschrift" Foreground="{DynamicResource ThemeFg6D8580}" VerticalAlignment="Center"/>
+   </StackPanel>
+  </Grid>
+ </Border>
+ <Grid Grid.Row="1">
+  <TabControl x:Name="MainTabs">
+   <TabItem Header="Обзор">
+    <ScrollViewer VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled" PanningMode="VerticalOnly">
+     <Grid Margin="24,18,24,22">
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="14"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <Grid.ColumnDefinitions><ColumnDefinition Width="1.08*"/><ColumnDefinition Width="22"/><ColumnDefinition Width="1*"/></Grid.ColumnDefinitions>
+      <Border Grid.Row="0" Grid.Column="0" Background="{DynamicResource ThemeBg183F43}" CornerRadius="20" MinHeight="265" Padding="24" ClipToBounds="True">
+       <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <StackPanel Orientation="Horizontal">
+         <Ellipse Width="9" Height="9" Fill="{DynamicResource ThemeFillABE4C7}" VerticalAlignment="Center" Margin="0,0,9,0"/>
+         <TextBlock Text="Управление сетью" Foreground="{DynamicResource ThemeFgB7DDD0}" FontSize="13" FontWeight="SemiBold"/>
+        </StackPanel>
+        <Grid x:Name="HeroContentGrid" Grid.Row="1" ClipToBounds="True">
+         <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="128"/>
+         </Grid.ColumnDefinitions>
+         <!-- The status and radar occupy independent columns. Even a long
+              status must wrap instead of drawing over the illustration. -->
+         <StackPanel x:Name="HeroTextColumn" Grid.Column="0"
+                     HorizontalAlignment="Stretch" VerticalAlignment="Center" Margin="0,7,10,0">
+          <TextBlock Text="Ваш VPN" FontFamily="Bahnschrift" FontWeight="SemiBold"
+                     FontSize="34" TextWrapping="NoWrap" Foreground="{DynamicResource ThemeFgF1FFF6}"/>
+          <TextBlock x:Name="StatusLabel" Text="Не подключено"
+                     Foreground="{DynamicResource ThemeFgBCE9D6}" FontSize="13"
+                     TextWrapping="Wrap" HorizontalAlignment="Stretch" Margin="0,8,0,0"/>
+         </StackPanel>
+         <Viewbox x:Name="RadarViewport" Grid.Column="1" Width="126" Height="126"
+                  HorizontalAlignment="Center" VerticalAlignment="Center"
+                  Stretch="Uniform" Opacity="0.42" IsHitTestVisible="False">
+          <Canvas Width="166" Height="162">
+           <Ellipse Canvas.Left="9" Canvas.Top="7" Width="145" Height="145" Stroke="{DynamicResource ThemeStroke75A99E}" StrokeThickness="1"/>
+           <Ellipse Canvas.Left="31" Canvas.Top="29" Width="101" Height="101" Stroke="{DynamicResource ThemeStroke81C7B4}" StrokeThickness="1"/>
+           <Ellipse Canvas.Left="52" Canvas.Top="50" Width="59" Height="59" Stroke="{DynamicResource ThemeStrokeA0D8C5}" StrokeThickness="2"/>
+           <Line X1="3" Y1="80" X2="163" Y2="80" Stroke="{DynamicResource ThemeStroke86C3B4}" StrokeThickness="1"/>
+           <Line X1="82" Y1="2" X2="82" Y2="160" Stroke="{DynamicResource ThemeStroke86C3B4}" StrokeThickness="1"/>
+           <Ellipse Canvas.Left="77" Canvas.Top="75" Width="11" Height="11" Fill="{DynamicResource ThemeFillC4F1D8}"/>
+          </Canvas>
+         </Viewbox>
+        </Grid>
+        <StackPanel Grid.Row="2" Orientation="Horizontal">
+         <Button x:Name="ConnectButton" Style="{StaticResource AccentHeroButton}" Content="Подключить" Click="Connect_Click" Margin="0,0,9,0" Padding="19,11"/>
+         <Button x:Name="DisconnectButton" Style="{StaticResource QuietHeroButton}" Content="Отключить" Click="Disconnect_Click" Margin="0" Padding="15,11"/>
+        </StackPanel>
+       </Grid>
+      </Border>
+      <Grid Grid.Row="0" Grid.Column="2" Margin="3,3,0,0">
+       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+       <StackPanel>
+        <TextBlock Text="Выберите маршрут" FontFamily="Bahnschrift" FontSize="25" FontWeight="SemiBold"/>
+        <TextBlock Text="Сервер можно сменить прямо здесь." Foreground="{DynamicResource ThemeFg64807B}" Margin="0,5,0,0" FontSize="13"/>
+       </StackPanel>
+       <StackPanel Grid.Row="1" Margin="0,21,0,0">
+        <TextBlock Text="Сервер" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource ThemeFg587570}" Margin="0,0,0,8"/>
+        <ComboBox x:Name="ServerBox" Height="43" SelectionChanged="ServerBox_SelectionChanged"/>
+        <TextBlock x:Name="EngineInfoLabel" Text="Ядро определяется по протоколу" Foreground="{DynamicResource ThemeFg60817A}" FontSize="12" Margin="0,10,0,0" TextWrapping="Wrap"/>
+       </StackPanel>
+       <Grid Grid.Row="2" VerticalAlignment="Bottom" Margin="0,20,0,10">
+        <Border BorderBrush="{DynamicResource ThemeBorderD0DFD7}" BorderThickness="0,1,0,0" Padding="0,12,0,0">
+         <StackPanel>
+          <TextBlock Text="Состояние соединения" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource ThemeFg547570}" Margin="0,0,0,5"/>
+          <TextBlock x:Name="RecoveryText" Text="Контроль соединения готов" Foreground="{DynamicResource ThemeFg2F5E58}" TextWrapping="Wrap" FontSize="12"/>
+         </StackPanel>
+        </Border>
+       </Grid>
+       <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,5,0,0">
+        <Button x:Name="RefreshButton" Style="{StaticResource TertiaryButton}" Content="Обновить серверы" Click="Refresh_Click" Margin="0,0,9,0" />
+        <Button Style="{StaticResource TertiaryButton}" Content="Настройки" Click="SettingsLink_Click" Margin="0" />
+       </StackPanel>
+      </Grid>
+      <Border Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3" Background="{DynamicResource ThemeBgE6EFEB}" CornerRadius="13" Padding="16,13">
+       <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="18"/><ColumnDefinition Width="1"/><ColumnDefinition Width="18"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <StackPanel Grid.Column="0" MinWidth="170">
+         <TextBlock Text="Задержка" Foreground="{DynamicResource ThemeFg64817A}" FontSize="11" Margin="0,0,0,3"/>
+         <TextBlock x:Name="LatencyText" Text="HTTPS: нет данных" Foreground="{DynamicResource ThemeFg1E514C}" FontFamily="Bahnschrift" FontSize="14"/>
+        </StackPanel>
+        <Border Grid.Column="2" Background="{DynamicResource ThemeBgC9D9D2}" Width="1"/>
+        <StackPanel Grid.Column="4">
+         <TextBlock Text="Трафик в реальном времени" Foreground="{DynamicResource ThemeFg64817A}" FontSize="11" Margin="0,0,0,3"/>
+         <TextBlock x:Name="UdpText" Text="UDP: нет данных" Foreground="{DynamicResource ThemeFg1E514C}" FontFamily="Bahnschrift" FontSize="14" TextWrapping="Wrap"/>
+        </StackPanel>
+       </Grid>
+      </Border>
+     </Grid>
+    </ScrollViewer>
+   </TabItem>
+   <TabItem Header="Маршруты">
+    <ScrollViewer x:Name="RulesPageScroll" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled" PanningMode="VerticalOnly" Margin="22,15,22,20">
+     <StackPanel Margin="3">
+      <TextBlock Text="Создавай исключения для сайтов, IP-адресов и приложений." Foreground="{DynamicResource ThemeFg6A8580}" Margin="0,0,0,9" FontSize="12" TextWrapping="Wrap"/>
+      <GroupBox Header="Добавить исключение">
+       <StackPanel Orientation="Vertical">
+        <Grid>
+         <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="98"/>
+          <ColumnDefinition Width="159"/>
+          <ColumnDefinition Width="Auto"/>
+         </Grid.ColumnDefinitions>
+         <TextBox x:Name="DomainBox" Grid.Column="0" MinWidth="105" Height="33" Margin="0,0,6,0" FontSize="12"
+                  ToolTip="Домен: example.com  •  IP: 8.8.8.8  •  Подсеть: 1.2.3.0/24  •  IPv6: 2001:db8::/32"/>
+         <ComboBox x:Name="RuleRouteBox" Grid.Column="1" Height="33" Margin="0,0,6,0"
+                   SelectedIndex="0" SelectionChanged="RuleRouteBox_SelectionChanged" FontSize="12">
+          <ComboBoxItem Content="DIRECT" Tag="DIRECT"/><ComboBoxItem Content="СЕРВЕР" Tag="VEGA"/><ComboBoxItem Content="BLOCK" Tag="REJECT"/>
+         </ComboBox>
+         <ComboBox x:Name="RuleNodeBox" Grid.Column="2" Height="33" Margin="0,0,6,0"
+                   IsEnabled="False" FontSize="12"/>
+         <Button Grid.Column="3" Content="Сохранить" Click="AddRule_Click" Margin="0" Padding="9,7"/>
+        </Grid>
+        <Grid Margin="0,7,0,0">
+         <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="*"/>
+         </Grid.ColumnDefinitions>
+         <TextBlock Grid.Column="0" Text="Название / кому принадлежит:" Margin="0,7,8,0"
+                    Foreground="{DynamicResource ThemeFg476F6E}" FontSize="11.5"/>
+         <TextBox x:Name="RuleLabelBox" Grid.Column="1" Height="30" MaxLength="96"
+                  FontSize="12" ToolTip="Необязательно. Пример: Telegram, домашняя сеть, рабочий сервер"
+                  VerticalContentAlignment="Center"/>
+        </Grid>
+        <TextBlock Text="Например: 149.154.160.0/20 — Telegram. Выбери исключение в списке, чтобы изменить название или маршрут." Foreground="{DynamicResource ThemeFg62807C}" FontSize="11" TextWrapping="Wrap" Margin="0,7,0,0"/>
+       </StackPanel>
+      </GroupBox>
+      <GroupBox Header="Правила, сгруппированные по сервисам">
+       <DockPanel>
+        <Button DockPanel.Dock="Bottom" Content="Удалить исключение" Click="RemoveRule_Click" Margin="0,12,0,0" HorizontalAlignment="Left"/>
+        <!-- Outer page owns scrolling: removing the nested ListBox ScrollViewer
+             keeps mouse-wheel scrolling predictable even over expanded items. -->
+        <ListBox x:Name="RulesList" Background="Transparent" Foreground="{DynamicResource ThemeFg1A3E42}"
+                 BorderThickness="0" FontSize="12.5" KeyboardNavigation.TabNavigation="Continue"
+                 SelectionChanged="RulesList_SelectionChanged">
+         <ListBox.Template>
+          <ControlTemplate TargetType="{x:Type ListBox}">
+           <ItemsPresenter/>
+          </ControlTemplate>
+         </ListBox.Template>
+         <ListBox.ItemContainerStyle>
+          <Style TargetType="{x:Type ListBoxItem}" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+           <Setter Property="Padding" Value="9,4"/>
+           <Setter Property="Margin" Value="0,0,0,1"/>
+           <Setter Property="FontSize" Value="12"/>
+          </Style>
+         </ListBox.ItemContainerStyle>
+         <ListBox.GroupStyle>
+          <GroupStyle>
+           <GroupStyle.ContainerStyle>
+            <Style TargetType="{x:Type GroupItem}">
+             <Setter Property="Template">
+              <Setter.Value>
+               <ControlTemplate TargetType="{x:Type GroupItem}">
+                <Expander IsExpanded="False" Loaded="ServiceGroup_Loaded" Expanded="ServiceGroup_Expanded" Collapsed="ServiceGroup_Collapsed" Margin="0,0,0,5" BorderThickness="1"
+                          Background="{DynamicResource ThemeBgEFF5F1}" BorderBrush="{DynamicResource ThemeBorderC9DBD4}"
+                          Foreground="{DynamicResource ThemeFg1A3E42}">
+                 <Expander.Header>
+                  <DockPanel LastChildFill="True" Margin="2,0,1,0">
+                   <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="12,0,0,0">
+                    <TextBlock Text="{Binding ItemCount}" Foreground="{DynamicResource ThemeFg587B79}" FontSize="12"/>
+                    <TextBlock Text=" правил" Foreground="{DynamicResource ThemeFg587B79}" FontSize="12"/>
+                   </StackPanel>
+                   <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"
+                              Foreground="{DynamicResource ThemeFg173B3E}"/>
+                  </DockPanel>
+                 </Expander.Header>
+                 <ItemsPresenter Margin="2,4,2,4"/>
+                </Expander>
+               </ControlTemplate>
+              </Setter.Value>
+             </Setter>
+            </Style>
+           </GroupStyle.ContainerStyle>
+          </GroupStyle>
+         </ListBox.GroupStyle>
+        </ListBox>
+       </DockPanel>
+      </GroupBox>
+      <GroupBox Header="Диагностика домена">
+       <StackPanel>
+        <StackPanel>
+         <TextBox x:Name="ProbeBox" Height="33" ToolTip="Домен для проверки двух маршрутов"/>
+         <WrapPanel Margin="0,7,0,0">
+          <Button Content="Сравнить маршруты" Click="Probe_Click" Margin="0,0,7,0" Padding="11,7"/>
+          <Button Content="Подобрать маршрут" Click="AutoRoute_Click" Margin="0" Padding="11,7" Background="{DynamicResource ThemeBg276D65}"/>
+         </WrapPanel>
+        </StackPanel>
+        <TextBlock x:Name="ProbeResult" Text="HTTP 403 не всегда означает недоступность сайта в браузере. Программа может подобрать пробный маршрут через сервер." Foreground="{DynamicResource ThemeFg6A8580}" Margin="0,12,0,0" TextWrapping="Wrap"/>
+       </StackPanel>
+      </GroupBox>
+     </StackPanel>
+    </ScrollViewer>
+   </TabItem>
+   <TabItem Header="Настройки">
+    <ScrollViewer VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled" Margin="22,15,22,20">
+     <StackPanel>
+      <TextBlock Text="Настройки подключения" FontFamily="Bahnschrift" FontSize="26" FontWeight="SemiBold" Margin="0,2,0,2"/>
+      <TextBlock Text="Все параметры собраны здесь и не мешают главному экрану." FontSize="12" Foreground="{DynamicResource ThemeFg66817C}" Margin="0,0,0,19"/>
+      <Border Background="{DynamicResource ThemeBgFFFFFF}" CornerRadius="13" BorderBrush="{DynamicResource ThemeBorderD5E3DD}" BorderThickness="1" Padding="18" Margin="0,0,0,12">
+       <StackPanel>
+        <DockPanel LastChildFill="False">
+         <TextBlock Text="Подписка 3x-ui" FontFamily="Bahnschrift" FontSize="19" FontWeight="SemiBold"/>
+         <TextBlock x:Name="ImportSummary" Text="Нет серверов" FontSize="12" Foreground="{DynamicResource ThemeFg608079}" DockPanel.Dock="Right" VerticalAlignment="Center"/>
+        </DockPanel>
+        <TextBlock Text="Ссылка хранится в профиле Windows в зашифрованном виде" Foreground="{DynamicResource ThemeFg66817C}" FontSize="12" Margin="0,4,0,10"/>
+        <TextBox x:Name="SubscriptionBox" Height="38" ToolTip="Ссылка на подписку 3x-ui"/>
+        <Button x:Name="ImportButton" Content="Импортировать подписку" Click="Import_Click" HorizontalAlignment="Left" Margin="0,11,0,0"/>
+       </StackPanel>
+      </Border>
+      <Border Background="{DynamicResource ThemeBgFFFFFF}" CornerRadius="13" BorderBrush="{DynamicResource ThemeBorderD5E3DD}" BorderThickness="1" Padding="18">
+       <StackPanel>
+        <TextBlock Text="Маршрутизация" FontFamily="Bahnschrift" FontSize="19" FontWeight="SemiBold" Margin="0,0,0,10"/>
+        <TextBlock Text="Режим подключения" FontSize="12" Foreground="{DynamicResource ThemeFg5A7976}" Margin="0,0,0,5"/>
+        <ComboBox x:Name="ModeBox" Height="39" SelectionChanged="ModeBox_SelectionChanged">
+         <ComboBoxItem Tag="smart" Content="Умный — VPN только при необходимости"/>
+         <ComboBoxItem Tag="vpn" Content="Весь интернет через VPN"/>
+         <ComboBoxItem Tag="direct" Content="Весь интернет напрямую"/>
+        </ComboBox>
+        <CheckBox x:Name="AutoLearnBox" Content="Автоматически проверять доступность сайтов" IsChecked="True" Click="SettingsChanged_Click" Margin="0,16,0,3"/>
+        <CheckBox x:Name="TunBox" Content="Использовать TUN для всех приложений" Click="SettingsChanged_Click" Margin="0,8,0,0"/>
+        <TextBlock Text="TUN требует прав администратора. Изменение режима или TUN применяется после переподключения." TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource ThemeFg66817C}" Margin="0,12,0,0"/>
+       </StackPanel>
+      </Border>
+      <Border Background="{DynamicResource ThemeBgFFFFFF}" CornerRadius="13" BorderBrush="{DynamicResource ThemeBorderD5E3DD}" BorderThickness="1" Padding="18" Margin="0,12,0,0">
+       <StackPanel>
+        <TextBlock Text="Обновления приложения" FontFamily="Bahnschrift" FontSize="19" FontWeight="SemiBold"/>
+        <TextBlock Text="Проверка стабильных версий из GitHub Releases. Установка только после подтверждения." Foreground="{DynamicResource ThemeFg66817C}" FontSize="12" TextWrapping="Wrap" Margin="0,5,0,11"/>
+        <TextBlock x:Name="UpdateStatusText" Text="Обновления ещё не проверены" Foreground="{DynamicResource ThemeFg608079}" FontSize="12" TextWrapping="Wrap"/>
+        <Button x:Name="CheckUpdateButton" Content="Проверить обновления" Click="CheckUpdate_Click" HorizontalAlignment="Left" Margin="0,11,0,0"/>
+       </StackPanel>
+      </Border>
+     </StackPanel>
+    </ScrollViewer>
+   </TabItem>
+   <TabItem Header="Журнал">
+    <Grid Margin="22,16,22,20">
+     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+     <StackPanel Margin="0,0,0,12">
+      <TextBlock Text="Журнал событий" FontFamily="Bahnschrift" FontSize="23" FontWeight="SemiBold"/>
+      <TextBlock Text="Подключение, маршруты и результаты проверок." Foreground="{DynamicResource ThemeFg62817B}" FontSize="12" Margin="0,4,0,0"/>
+     </StackPanel>
+     <Border Grid.Row="1" Background="{DynamicResource ThemeBg183C42}" CornerRadius="12" Padding="14">
+      <TextBox x:Name="LogBox" IsReadOnly="True" TextWrapping="Wrap"
+       BorderThickness="0" Background="Transparent" Foreground="{DynamicResource ThemeFgCDE8D9}"
+       VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+       FontFamily="Consolas" FontSize="12" Padding="4"/>
+     </Border>
+    </Grid>
+   </TabItem>
+  </TabControl>
+  <local:OnboardingView x:Name="OnboardingPanel" Visibility="Collapsed"/>
+ </Grid>
+</Grid>
+</Window>
