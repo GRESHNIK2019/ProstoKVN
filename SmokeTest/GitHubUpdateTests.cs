@@ -21,9 +21,9 @@ public static class GitHubUpdateTests
         Directory.CreateDirectory(work);
         try
         {
-            const string tag="v0.30.0";
-            const string zipName="ProstoKVN-v0.30.0-win-x64.zip";
-            const string url="https://github.com/GRESHNIK2019/ProstoKVN/releases/download/v0.30.0/"+zipName;
+            const string tag="v0.30.1";
+            const string zipName="ProstoKVN-v0.30.1-win-x64.zip";
+            const string url="https://github.com/GRESHNIK2019/ProstoKVN/releases/download/v0.30.1/"+zipName;
             string testZip=Path.Combine(work,"good.zip");
             using(var zip=ZipFile.Open(testZip,ZipArchiveMode.Create))
             {
@@ -50,9 +50,9 @@ public static class GitHubUpdateTests
                 return Task.CompletedTask;
             };
             var found=await GitHubUpdateService.CheckAsync(new Version(0,29,0));
-            Assert(found?.Tag==tag && found.Version==new Version(0,30,0)
+            Assert(found?.Tag==tag && found.Version==new Version(0,30,1)
                 && found.Sha256==sha,"Latest stable release, version and SHA-256 parsed");
-            Assert(await GitHubUpdateService.CheckAsync(new Version(0,30,0))==null,
+            Assert(await GitHubUpdateService.CheckAsync(new Version(0,30,1))==null,
                 "Already installed release not offered again");
             string stage=await GitHubUpdateService.StageAsync(found!);
             Assert(File.Exists(Path.Combine(stage,"payload","ProstoKVN.exe"))
@@ -99,8 +99,8 @@ public static class GitHubUpdateTests
             if (!string.IsNullOrWhiteSpace(real) && File.Exists(real))
             {
                 string checksum = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(real)));
-                var prod = new GitHubUpdate(new Version(0,30,0), "v0.30.0",
-                    "https://github.com/GRESHNIK2019/ProstoKVN/releases/download/v0.30.0/ProstoKVN-v0.30.0-win-x64.zip",
+                var prod = new GitHubUpdate(new Version(0,30,1), "v0.30.1",
+                    "https://github.com/GRESHNIK2019/ProstoKVN/releases/download/v0.30.1/ProstoKVN-v0.30.1-win-x64.zip",
                     checksum, new FileInfo(real).Length, "");
                 GitHubUpdateService.TestDownload = (_, dest, _, _) =>
                 {

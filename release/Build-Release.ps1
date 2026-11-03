@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$Version = '0.30.0',
+    [string]$Version = '0.30.1',
     [string]$SignTool = '',
     [string]$CertificateThumbprint = '',
     [switch]$AllowUnsignedDev
