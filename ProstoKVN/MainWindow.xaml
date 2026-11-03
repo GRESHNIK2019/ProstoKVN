@@ -407,7 +407,16 @@
 
        <DockPanel>
 
-        <Button DockPanel.Dock="Bottom" Content="Удалить исключение" Click="RemoveRule_Click" Margin="0,12,0,0" HorizontalAlignment="Left"/>
+        <DockPanel DockPanel.Dock="Bottom" LastChildFill="True" Margin="0,10,0,0">
+         <Button x:Name="RemoveRuleButton" DockPanel.Dock="Right"
+                 Content="Удалить выбранное" Click="RemoveRule_Click"
+                 IsEnabled="False" HorizontalAlignment="Right"
+                 Style="{StaticResource TertiaryButton}" Padding="11,7" Margin="8,0,0,0"/>
+         <TextBlock x:Name="SelectedRuleHint" Text="Выбери правило — правый клик откроет действия"
+                    FontSize="11" Foreground="{DynamicResource ThemeFg608079}"
+                    VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                    Margin="0,0,7,0"/>
+        </DockPanel>
 
         <!-- Outer page owns scrolling: removing the nested ListBox ScrollViewer
 
@@ -430,17 +439,68 @@
          </ListBox.Template>
 
          <ListBox.ItemContainerStyle>
-
-          <Style TargetType="{x:Type ListBoxItem}" BasedOn="{StaticResource {x:Type ListBoxItem}}">
-
-           <Setter Property="Padding" Value="9,4"/>
-
-           <Setter Property="Margin" Value="0,0,0,1"/>
-
+          <Style TargetType="{x:Type ListBoxItem}">
+           <Setter Property="Padding" Value="9,5"/>
+           <Setter Property="Margin" Value="0,0,0,2"/>
            <Setter Property="FontSize" Value="12"/>
-
+           <Setter Property="Foreground" Value="{DynamicResource ThemeFg1A3E42}"/>
+           <Setter Property="Background" Value="Transparent"/>
+           <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+           <Setter Property="Cursor" Value="Hand"/>
+           <EventSetter Event="PreviewMouseRightButtonDown" Handler="RuleItem_RightButtonDown"/>
+           <Setter Property="ContextMenu">
+            <Setter.Value>
+             <ContextMenu/>
+            </Setter.Value>
+           </Setter>
+           <Setter Property="Template">
+            <Setter.Value>
+             <ControlTemplate TargetType="{x:Type ListBoxItem}">
+              <Border x:Name="RuleRowFrame" Background="{TemplateBinding Background}"
+                      BorderBrush="Transparent" BorderThickness="1"
+                      CornerRadius="6" Padding="{TemplateBinding Padding}"
+                      SnapsToDevicePixels="True">
+               <Grid>
+                <Grid.ColumnDefinitions>
+                 <ColumnDefinition Width="4"/>
+                 <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Border x:Name="RuleSelectedMarker" Grid.Column="0"
+                        Background="{DynamicResource RuleSelectedAccent}"
+                        Width="4" CornerRadius="2" Visibility="Collapsed"/>
+                <TextBlock x:Name="RuleRowText" Grid.Column="1" Text="{Binding}"
+                           Foreground="{TemplateBinding Foreground}"
+                           FontSize="{TemplateBinding FontSize}"
+                           TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"
+                           VerticalAlignment="Center" Margin="7,0,0,0"/>
+               </Grid>
+              </Border>
+              <ControlTemplate.Triggers>
+               <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="RuleRowFrame" Property="Background"
+                        Value="{DynamicResource RuleRowHover}"/>
+               </Trigger>
+               <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                <Setter TargetName="RuleRowFrame" Property="BorderBrush"
+                        Value="{DynamicResource RuleSelectedBorder}"/>
+               </Trigger>
+               <Trigger Property="IsSelected" Value="True">
+                <Setter TargetName="RuleRowFrame" Property="Background"
+                        Value="{DynamicResource RuleSelectedBackground}"/>
+                <Setter TargetName="RuleRowFrame" Property="BorderBrush"
+                        Value="{DynamicResource RuleSelectedBorder}"/>
+                <Setter TargetName="RuleSelectedMarker" Property="Visibility"
+                        Value="Visible"/>
+                <Setter TargetName="RuleRowText" Property="Foreground"
+                        Value="{DynamicResource RuleSelectedForeground}"/>
+                <Setter TargetName="RuleRowText" Property="FontWeight"
+                        Value="SemiBold"/>
+               </Trigger>
+              </ControlTemplate.Triggers>
+             </ControlTemplate>
+            </Setter.Value>
+           </Setter>
           </Style>
-
          </ListBox.ItemContainerStyle>
 
          <ListBox.GroupStyle>
@@ -546,22 +606,114 @@
    <Expander x:Name="SubscriptionSection" Style="{StaticResource CompactSectionStyle}" IsExpanded="False">
     <Expander.Header>
      <DockPanel LastChildFill="True">
-      <TextBlock x:Name="ImportSummary" DockPanel.Dock="Right" Text="Нет серверов"
+      <TextBlock x:Name="ImportSummary" DockPanel.Dock="Right" Text="Нет подписок"
                  Foreground="{DynamicResource ThemeFg608079}" FontSize="11"
                  Margin="10,0,9,0" VerticalAlignment="Center" MaxWidth="170"
                  TextTrimming="CharacterEllipsis"/>
-      <TextBlock Text="Подписка 3x-ui" FontWeight="SemiBold" FontSize="14"
+      <TextBlock Text="Мои подписки" FontWeight="SemiBold" FontSize="14"
                  Foreground="{DynamicResource ThemeFg173B3E}" VerticalAlignment="Center"/>
      </DockPanel>
     </Expander.Header>
     <StackPanel>
-     <TextBlock Text="Ссылка сохраняется зашифрованной в профиле Windows."
+     <TextBlock Text="Несколько источников серверов: Base64, Mihomo YAML, sing-box и Xray JSON."
                 Foreground="{DynamicResource ThemeFg66817C}" FontSize="12"
-                Margin="0,0,0,9" TextWrapping="Wrap"/>
-     <TextBox x:Name="SubscriptionBox" Height="37"
-              ToolTip="Ссылка на подписку 3x-ui"/>
-     <Button x:Name="ImportButton" Content="Импортировать подписку"
-             Click="Import_Click" HorizontalAlignment="Left" Margin="0,10,0,0"/>
+                Margin="0,0,0,10" TextWrapping="Wrap"/>
+     <ListBox x:Name="SubscriptionList" MinHeight="40" MaxHeight="192"
+              SelectionChanged="SubscriptionList_SelectionChanged"
+              ScrollViewer.VerticalScrollBarVisibility="Auto"
+              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+              Background="Transparent"
+              BorderThickness="0"
+              Margin="0,0,0,9" Padding="0"
+              ToolTip="Выбери подписку для редактирования. Ссылки здесь не показываются.">
+      <ListBox.ItemContainerStyle>
+       <Style TargetType="{x:Type ListBoxItem}">
+        <Setter Property="Padding" Value="11,8"/>
+        <Setter Property="Margin" Value="0,0,0,4"/>
+        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+        <Setter Property="Template">
+         <Setter.Value>
+          <ControlTemplate TargetType="{x:Type ListBoxItem}">
+           <Border x:Name="ProfileCard" Background="{DynamicResource ThemeBgEFF5F1}"
+                   BorderBrush="{DynamicResource ThemeBorderC9DBD4}" BorderThickness="1"
+                   CornerRadius="9" Padding="{TemplateBinding Padding}">
+            <Grid>
+             <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="4"/>
+              <ColumnDefinition Width="*"/>
+             </Grid.ColumnDefinitions>
+             <Border x:Name="ProfileAccent" Grid.Column="0" Width="4"
+                     CornerRadius="2" Background="{DynamicResource RuleSelectedAccent}"
+                     Visibility="Collapsed"/>
+             <StackPanel Grid.Column="1" Margin="11,0,2,0">
+              <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13"
+                         Foreground="{DynamicResource ThemeFg173B3E}"
+                         TextTrimming="CharacterEllipsis"/>
+              <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+               <TextBlock Text="{Binding DetectedFormat}" FontSize="11"
+                          Foreground="{DynamicResource ThemeFg66817C}"/>
+               <TextBlock Text="  •  " FontSize="11" Foreground="{DynamicResource ThemeFg66817C}"/>
+               <TextBlock Text="{Binding NodeCount}" FontSize="11"
+                          Foreground="{DynamicResource ThemeFg66817C}"/>
+               <TextBlock Text=" серверов" FontSize="11" Foreground="{DynamicResource ThemeFg66817C}"/>
+              </StackPanel>
+             </StackPanel>
+            </Grid>
+           </Border>
+           <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+             <Setter TargetName="ProfileCard" Property="Background"
+                     Value="{DynamicResource RuleRowHover}"/>
+            </Trigger>
+            <Trigger Property="IsSelected" Value="True">
+             <Setter TargetName="ProfileCard" Property="Background"
+                     Value="{DynamicResource RuleSelectedBackground}"/>
+             <Setter TargetName="ProfileCard" Property="BorderBrush"
+                     Value="{DynamicResource RuleSelectedBorder}"/>
+             <Setter TargetName="ProfileAccent" Property="Visibility" Value="Visible"/>
+            </Trigger>
+           </ControlTemplate.Triggers>
+          </ControlTemplate>
+         </Setter.Value>
+        </Setter>
+       </Style>
+      </ListBox.ItemContainerStyle>
+     </ListBox>
+     <WrapPanel Margin="0,0,0,10">
+      <Button x:Name="NewSubscriptionButton" Content="+ Добавить подписку"
+              Click="NewSubscription_Click" Margin="0,0,8,0"
+              Style="{StaticResource TertiaryButton}"/>
+      <Button x:Name="RemoveSubscriptionButton" Content="Удалить выбранную"
+              Click="RemoveSubscription_Click" IsEnabled="False" Margin="0,0,8,0"
+              Style="{StaticResource TertiaryButton}"/>
+      <Button x:Name="RefreshAllSubscriptionsButton" Content="Обновить все"
+              Click="RefreshAllSubscriptions_Click" Style="{StaticResource TertiaryButton}"/>
+     </WrapPanel>
+     <TextBlock Text="Название" FontSize="12" Foreground="{DynamicResource ThemeFg66817C}"
+                Margin="0,0,0,4"/>
+     <TextBox x:Name="SubscriptionNameBox" Height="34" MaxLength="96"
+              ToolTip="Название источника серверов" Margin="0,0,0,10"/>
+     <TextBlock Text="HTTPS-ссылка подписки" FontSize="12"
+                Foreground="{DynamicResource ThemeFg66817C}" Margin="0,0,0,4"/>
+     <TextBox x:Name="SubscriptionBox" Height="36"
+              ToolTip="Секретная ссылка сохраняется зашифрованной через Windows DPAPI"
+              Margin="0,0,0,10"/>
+     <TextBlock Text="Формат" FontSize="12"
+                Foreground="{DynamicResource ThemeFg66817C}" Margin="0,0,0,4"/>
+     <ComboBox x:Name="SubscriptionFormatBox" Height="35" SelectedIndex="0" Margin="0,0,0,10">
+      <ComboBoxItem Tag="auto" Content="Автоматическое определение (рекомендуется)"/>
+      <ComboBoxItem Tag="base64" Content="Base64 / V2Ray"/>
+      <ComboBoxItem Tag="mihomo" Content="Mihomo / Clash YAML"/>
+      <ComboBoxItem Tag="singbox" Content="sing-box JSON"/>
+      <ComboBoxItem Tag="xray" Content="Xray JSON"/>
+     </ComboBox>
+     <WrapPanel>
+      <Button x:Name="ImportButton" Content="Добавить / сохранить"
+              Click="Import_Click" Margin="0,0,9,0"/>
+      <TextBlock x:Name="ProfileStatusText" Text="Ссылки хранятся зашифрованными в профиле Windows"
+                 Foreground="{DynamicResource ThemeFg66817C}" FontSize="11.5"
+                 VerticalAlignment="Center" TextWrapping="Wrap"/>
+     </WrapPanel>
     </StackPanel>
    </Expander>
    <Expander x:Name="RoutingSection" Header="Режим и маршрутизация"

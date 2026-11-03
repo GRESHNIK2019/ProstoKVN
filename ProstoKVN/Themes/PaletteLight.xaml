@@ -107,4 +107,9 @@
  <SolidColorBrush x:Key="NavSelectedOutline" Color="#216E62"/>
  <SolidColorBrush x:Key="NavFocus" Color="#C18E40"/>
  <SolidColorBrush x:Key="NavDivider" Color="#D5E2DB"/>
+ <SolidColorBrush x:Key="RuleRowHover" Color="#E0F4E9"/>
+ <SolidColorBrush x:Key="RuleSelectedBackground" Color="#C2F0DA"/>
+ <SolidColorBrush x:Key="RuleSelectedBorder" Color="#268A72"/>
+ <SolidColorBrush x:Key="RuleSelectedForeground" Color="#154B3D"/>
+ <SolidColorBrush x:Key="RuleSelectedAccent" Color="#299577"/>
 </ResourceDictionary>

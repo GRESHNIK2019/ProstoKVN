@@ -32,7 +32,8 @@ public static class StartupSubscriptionTests
     private static ProxyNode Node(string name)
         => new() { Name = name, Values = new Dictionary<string, object?> {
             ["name"] = name, ["type"] = "hysteria2",
-            ["server"] = "127.0.0.1", ["port"] = 24443
+            ["server"] = name == "Preferred B" ? "127.0.0.2" : "127.0.0.1",
+            ["port"] = 24443
         }};
     private static MainWindow NewWindow() => new() {
         WindowStartupLocation = WindowStartupLocation.Manual,
@@ -65,15 +66,23 @@ public static class StartupSubscriptionTests
                 };
                 window.Show();
                 var combo = (ComboBox)window.FindName("ServerBox");
-                PumpUntil(() => combo.Items.Count == 2, "Servers appear automatically after window opens");
-                Check(calls == 1 && ((ProxyNode)combo.SelectedItem).Name == "Preferred B",
+                try { PumpUntil(() => combo.Items.Count == 2, "Servers appear automatically after window opens"); }
+                catch
+                {
+                    Console.WriteLine("DEBUG server-count=" + combo.Items.Count);
+                    Console.WriteLine("DEBUG summary=" + ((TextBlock)window.FindName("ImportSummary")).Text);
+                    Console.WriteLine("DEBUG log=" + ((TextBox)window.FindName("LogBox")).Text[^Math.Min(2500, ((TextBox)window.FindName("LogBox")).Text.Length)..]);
+                    throw;
+                }
+                Check(calls == 1
+                    && ((ProxyNode)combo.SelectedItem).Name.EndsWith(" · Preferred B"),
                     "Only one request; previously selected server restored");
                 Check(((TextBlock)window.FindName("StatusLabel")).Text == "Не подключено",
                     "Subscription loading does not establish a VPN connection");
                 var preferences = UserStore.LoadSettings();
                 Check(preferences.Mode == "smart" && preferences.Tun
                     && !preferences.AutoLearn && preferences.Theme == "dark"
-                    && preferences.SelectedNode == "Preferred B"
+                    && preferences.SelectedNode.EndsWith(" · Preferred B")
                     && UserStore.DecryptUrl(preferences.ProtectedUrl) == Url,
                     "Subscription refresh preserves settings and encrypted URL");
                 window.Close();
@@ -116,10 +125,11 @@ public static class StartupSubscriptionTests
                 PumpUntil(() => staleSummary.Text.Contains("Ссылка изменена"),
                     "Stale response cannot overwrite changed subscription");
                 Check(((ComboBox)stale.FindName("ServerBox")).Items.Count == 2
-                    && ((ProxyNode)((ComboBox)stale.FindName("ServerBox")).Items[0]).Name == "Fallback A",
+                    && ((ProxyNode)((ComboBox)stale.FindName("ServerBox")).Items[0]).Name.EndsWith(" · Fallback A"),
                     "Stale network response cannot overwrite cached server list");
                 stale.Close();
 
+                SubscriptionProfileStore.Save(new List<SubscriptionProfile>());
                 UserStore.SaveSettings(new AppSettings());
                 var absent = NewWindow();
                 int absentCalls = 0;

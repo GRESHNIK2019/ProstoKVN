@@ -17,6 +17,8 @@ public static class SubscriptionCache
 {
     private sealed record Envelope(string UrlHash, DateTime SavedUtc, string ProtectedNodes);
     private static string FilePath => Path.Combine(UserStore.Home, "subscription-cache.json");
+    private static string MultiCacheDir => Path.Combine(UserStore.Home, "subscription-caches");
+    private static string CachePath(string url) => Path.Combine(MultiCacheDir, Fingerprint(url) + ".json");
     private static string Fingerprint(string url)
         => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url.Trim())));
     public static bool Save(string url, IReadOnlyList<ProxyNode> nodes)
@@ -25,15 +27,17 @@ public static class SubscriptionCache
         try
         {
             UserStore.EnsureHome();
+            Directory.CreateDirectory(MultiCacheDir);
             byte[] plain = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(nodes));
             byte[] encrypted = ProtectedData.Protect(plain, null, DataProtectionScope.CurrentUser);
             var envelope = new Envelope(Fingerprint(url), DateTime.UtcNow,
                 Convert.ToBase64String(encrypted));
-            string temp = FilePath + ".tmp-" + Guid.NewGuid().ToString("N");
+            string path = CachePath(url);
+            string temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
             try
             {
                 File.WriteAllText(temp, JsonSerializer.Serialize(envelope), Encoding.UTF8);
-                File.Move(temp, FilePath, overwrite: true);
+                File.Move(temp, path, overwrite: true);
             }
             finally { if (File.Exists(temp)) File.Delete(temp); }
             CryptographicOperations.ZeroMemory(plain);
@@ -49,9 +53,11 @@ public static class SubscriptionCache
         if (!SubscriptionImporter.IsValidUrl(url)) return false;
         try
         {
-            if (!File.Exists(FilePath) || new FileInfo(FilePath).Length > 5_000_000)
+            string path = CachePath(url);
+            if (!File.Exists(path)) path = FilePath; // Legacy single-subscription cache.
+            if (!File.Exists(path) || new FileInfo(path).Length > 5_000_000)
                 return false;
-            var envelope = JsonSerializer.Deserialize<Envelope>(File.ReadAllText(FilePath));
+            var envelope = JsonSerializer.Deserialize<Envelope>(File.ReadAllText(path));
             if (envelope == null || envelope.UrlHash != Fingerprint(url)
                 || DateTime.UtcNow - envelope.SavedUtc > TimeSpan.FromDays(30)
                 || envelope.SavedUtc > DateTime.UtcNow.AddMinutes(5)) return false;

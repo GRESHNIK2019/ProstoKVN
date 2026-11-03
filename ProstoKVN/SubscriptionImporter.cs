@@ -6,82 +6,87 @@ using System.Threading.Tasks;
 namespace ProstoKVN;
 
 /// <summary>
-/// Imports an HTTPS 3x-ui subscription without modifying user settings.
-/// The onboarding dialog commits only after usable nodes have been received.
+/// Universal HTTPS subscription import. Detects the returned format instead
+/// of trusting file extensions or a particular panel. The special 3x-ui
+/// /sub/ and /json/ endpoints remain supported for backward compatibility.
 /// </summary>
 public static class SubscriptionImporter
 {
-    public sealed record Result(string SubscriptionUrl, List<ProxyNode> Nodes, string Summary);
+    public sealed record Result(string SubscriptionUrl, List<ProxyNode> Nodes,
+        string Summary, string DetectedFormat = "auto");
 
     public static bool IsValidUrl(string input)
     {
-        return Uri.TryCreate(input.Trim(), UriKind.Absolute, out var uri)
+        return Uri.TryCreate(input?.Trim(), UriKind.Absolute, out var uri)
             && uri.Scheme == Uri.UriSchemeHttps
             && !string.IsNullOrWhiteSpace(uri.Host)
             && string.IsNullOrEmpty(uri.UserInfo)
             && string.IsNullOrEmpty(uri.Fragment);
     }
 
-    private static string Endpoint(string url, string type)
+    private static string? Alternate3xEndpoint(string url)
     {
         var builder = new UriBuilder(url);
-        string[] segments = builder.Path.Trim('/').Split('/');
-        if (segments.Length >= 2
-            && (segments[0].Equals("json", StringComparison.OrdinalIgnoreCase)
-                || segments[0].Equals("sub", StringComparison.OrdinalIgnoreCase)))
-            segments[0] = type;
+        var segments = builder.Path.Trim('/').Split('/');
+        if (segments.Length < 2) return null;
+        if (segments[0].Equals("sub", StringComparison.OrdinalIgnoreCase))
+            segments[0] = "json";
+        else if (segments[0].Equals("json", StringComparison.OrdinalIgnoreCase))
+            segments[0] = "sub";
+        else return null;
         builder.Path = "/" + string.Join("/", segments);
         return builder.Uri.AbsoluteUri;
     }
 
-    public static async Task<Result> LoadAsync(string rawUrl)
+    public static async Task<Result> LoadAsync(string rawUrl, string format = "auto")
     {
         string url = rawUrl.Trim();
         if (!IsValidUrl(url))
-            throw new InvalidOperationException("Нужна корректная HTTPS-ссылка подписки 3x-ui.");
-
-        List<ProxyNode> nodes = new();
-        bool jsonSuccess = false, subSuccess = false;
-        try
+            throw new InvalidOperationException("Нужна корректная HTTPS-ссылка подписки.");
+        string[] endpoints = format == "auto" && Alternate3xEndpoint(url) is string alt
+            ? new[] { url, alt } : new[] { url };
+        var nodes = new List<ProxyNode>();
+        var formats = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string endpoint in endpoints.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            var json = await JsonSubscription.LoadAsync(Endpoint(url, "json"));
-            nodes.AddRange(json);
-            jsonSuccess = json.Count > 0;
+            try
+            {
+                string content = await SubscriptionTransport.GetStringAsync(endpoint);
+                var parsed = UniversalSubscriptionParser.Parse(content, format);
+                formats.Add(parsed.Format);
+                foreach (var node in parsed.Nodes)
+                {
+                    if (nodes.Count >= UniversalSubscriptionParser.MaxNodes) break;
+                    if (keys.Add(Key(node))) nodes.Add(node);
+                }
+            }
+            catch (Exception) // One valid endpoint is sufficient for 3x-ui.
+            {
+                if (endpoints.Length == 1) throw new InvalidOperationException(
+                    "Подписка недоступна или не содержит совместимых серверов. Проверь HTTPS-ссылку и формат.");
+            }
         }
-        catch { /* Try the /sub/ format if JSON is unavailable. */ }
-
-        try
-        {
-            var (subNodes, _) = await SubscriptionReader.LoadAsync(Endpoint(url, "sub"));
-            var keys = new HashSet<string>(nodes.Select(Key), StringComparer.Ordinal);
-            foreach (var node in subNodes)
-                if (keys.Add(Key(node))) nodes.Add(node);
-            subSuccess = subNodes.Count > 0;
-        }
-        catch { /* A successful /json/ response is sufficient. */ }
-
         if (nodes.Count == 0)
             throw new InvalidOperationException(
-                "Серверы не получены. Проверь ссылку, интернет и срок действия подписки.");
-
-        var uniqueNames = new HashSet<string>(StringComparer.Ordinal);
+                "Не удалось получить совместимые серверы. Проверь ссылку, формат и срок действия подписки.");
+        var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (var node in nodes)
         {
-            string original = node.Name;
-            int index = 1;
-            while (!uniqueNames.Add(node.Name))
-                node.Name = original + " #" + ++index;
+            string baseName = node.Name;
+            int n = 1;
+            while (!names.Add(node.Name)) node.Name = baseName + " #" + ++n;
             node.Values["name"] = node.Name;
         }
-        string source = jsonSuccess && subSuccess ? "JSON + SUB" : jsonSuccess ? "JSON" : "SUB";
-        return new Result(url, nodes, $"{nodes.Count} серверов • {source}");
+        string detected = string.Join(" + ", formats.OrderBy(x => x));
+        return new(url, nodes, $"{nodes.Count} серверов • {detected}", detected);
     }
 
     private static string Key(ProxyNode node)
     {
-        string Read(string name) => node.Values.TryGetValue(name, out var value)
-            ? Convert.ToString(value) ?? "" : "";
-        return string.Join("|", Read("type"), Read("server"), Read("port"),
-            Read("uuid"), Read("network"));
+        string Read(string key) => node.Values.TryGetValue(key, out var v)
+            ? Convert.ToString(v) ?? "" : "";
+        return string.Join("|", Read("type"), Read("server"), Read("port"), Read("uuid"),
+            Read("password"), Read("network"), Read("servername"));
     }
 }

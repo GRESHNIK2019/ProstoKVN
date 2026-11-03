@@ -19,19 +19,45 @@ public static class JsonSubscription
         if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
             throw new InvalidOperationException("JSON-подписка должна быть по HTTPS.");
         string response = await SubscriptionTransport.GetStringAsync(uri.AbsoluteUri);
-        using var doc = JsonDocument.Parse(response);
+        return ParseContent(response);
+    }
+
+    public static List<ProxyNode> ParseContent(string response)
+    {
+        if (response.Length > UniversalSubscriptionParser.MaxResponseChars)
+            throw new InvalidOperationException("JSON-подписка слишком большая.");
+        using var doc = JsonDocument.Parse(response, new JsonDocumentOptions { MaxDepth = 40 });
         var root = doc.RootElement;
         IEnumerable<JsonElement> configurations = root.ValueKind == JsonValueKind.Array ? root.EnumerateArray().ToArray() : new[] { root };
         var list = new List<ProxyNode>();
         foreach (var config in configurations)
         {
             var outbounds = Prop(config, "outbounds");
-            if (outbounds.ValueKind != JsonValueKind.Array) continue;
+            if (outbounds.ValueKind != JsonValueKind.Array)
+            {
+                if (Has(config, "protocol"))
+                {
+                    var single = ConvertOutbound(config, config);
+                    if (single != null)
+                    {
+                        // Never pass third-party DNS, inbounds or routing to Xray.
+                        single.NativeXrayConfig = JsonSerializer.Serialize(new { outbounds = new[] { config } });
+                        list.Add(single);
+                    }
+                }
+                continue;
+            }
             var proxy = outbounds.EnumerateArray().FirstOrDefault(o => Str(o, "tag") == "proxy");
             if (proxy.ValueKind != JsonValueKind.Object) proxy = outbounds.EnumerateArray().FirstOrDefault(o => !new[] { "freedom", "blackhole", "dns" }.Contains(Str(o, "protocol")));
             if (proxy.ValueKind != JsonValueKind.Object) continue;
             var node = ConvertOutbound(config, proxy);
-            if (node != null) { node.NativeXrayConfig = config.GetRawText(); list.Add(node); }
+            if (node != null)
+            {
+                // Preserve only the selected native proxy outbound, not imported DNS,
+                // reverse proxy, inbound listeners, default routes or balancers.
+                node.NativeXrayConfig = JsonSerializer.Serialize(new { outbounds = new[] { proxy } });
+                list.Add(node);
+            }
         }
         var used = new HashSet<string>(StringComparer.Ordinal);
         foreach (var node in list)
@@ -48,8 +74,16 @@ public static class JsonSubscription
         var settings = Prop(outbound, "settings");
         var stream = Prop(outbound, "streamSettings");
         string protocol = Str(outbound, "protocol");
-        string server = Str(settings, "address");
-        int.TryParse(Str(settings, "port"), out int port);
+        // Standard Xray configs keep endpoints in settings.vnext / settings.servers.
+        var endpointArray = Prop(settings, protocol is "vless" or "vmess"
+            ? "vnext" : "servers");
+        var endpoint = endpointArray.ValueKind == JsonValueKind.Array
+            && endpointArray.GetArrayLength() > 0 ? endpointArray[0] : default;
+        var users = Prop(endpoint, "users");
+        var firstUser = users.ValueKind == JsonValueKind.Array
+            && users.GetArrayLength() > 0 ? users[0] : default;
+        string server = Str(settings, "address", Str(endpoint, "address"));
+        int.TryParse(Str(settings, "port", Str(endpoint, "port")), out int port);
         if (protocol == "hysteria") protocol = "hysteria2";
         if (protocol is not ("vless" or "vmess" or "trojan" or "shadowsocks" or "hysteria2")) return null;
         if (string.IsNullOrWhiteSpace(server) || port <= 0) return null;
@@ -57,14 +91,18 @@ public static class JsonSubscription
         var n = new ProxyNode { Name = name, Values = new() { ["name"] = name, ["type"] = protocol == "shadowsocks" ? "ss" : protocol, ["server"] = server, ["port"] = port } };
         if (protocol is "vless" or "vmess")
         {
-            n.Values["uuid"] = Str(settings, "id");
+            n.Values["uuid"] = Str(settings, "id", Str(firstUser, "id"));
             n.Values["udp"] = true;
             if (protocol == "vless")
             {
                 n.Values["packet-encoding"] = "xudp";
-                if (Nonempty(Str(settings, "flow")) is string flow) n.Values["flow"] = flow;
+                if (Nonempty(Str(settings, "flow", Str(firstUser, "flow"))) is string flow) n.Values["flow"] = flow;
             }
-            else { n.Values["alterId"] = 0; n.Values["cipher"] = "auto"; }
+            else
+            {
+                n.Values["alterId"] = int.TryParse(Str(firstUser, "alterId"), out int aid) ? aid : 0;
+                n.Values["cipher"] = Str(firstUser, "security", "auto");
+            }
         }
         else if (protocol == "hysteria2")
         {
@@ -75,8 +113,13 @@ public static class JsonSubscription
             var alpn = Prop(tls, "alpn");
             if (alpn.ValueKind == JsonValueKind.Array) n.Values["alpn"] = alpn.EnumerateArray().Select(x => x.ToString()).ToArray();
         }
-        else if (protocol == "trojan") n.Values["password"] = Str(settings, "password");
-        else if (protocol == "shadowsocks") { n.Values["cipher"] = Str(settings, "method"); n.Values["password"] = Str(settings, "password"); }
+        else if (protocol == "trojan")
+            n.Values["password"] = Str(settings, "password", Str(endpoint, "password"));
+        else if (protocol == "shadowsocks")
+        {
+            n.Values["cipher"] = Str(settings, "method", Str(endpoint, "method"));
+            n.Values["password"] = Str(settings, "password", Str(endpoint, "password"));
+        }
         string security = Str(stream, "security");
         if (security is "tls" or "reality" && protocol is "vless" or "vmess")
         {

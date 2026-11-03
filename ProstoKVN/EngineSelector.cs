@@ -18,6 +18,9 @@ public static class EngineSelector
         // outbound configuration is available; no lossy reconstruction.
         if ((transport == "xhttp" || reality) && !string.IsNullOrEmpty(node.NativeXrayConfig))
             return TunnelEngine.Xray;
+        // sing-box's limited VLESS sidecar does not yet reconstruct REALITY.
+        // Use Mihomo for imported sing-box REALITY nodes without native Xray.
+        if (reality) return TunnelEngine.Mihomo;
         if (type == "hysteria2" || type == "ss") return TunnelEngine.SingBox;
         if (type == "vless" && transport == "ws" && node.Values.ContainsKey("tls"))
             return TunnelEngine.SingBox;

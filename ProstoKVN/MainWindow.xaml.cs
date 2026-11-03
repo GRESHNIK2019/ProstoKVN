@@ -16,6 +16,10 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer monitorTimer = new() { Interval = TimeSpan.FromSeconds(12) };
     private bool monitorBusy;
     private int monitorTicks;
+    private bool vpnExitVerified;
+    private bool vpnVerificationBusy;
+    private DateTime lastVpnVerificationUtc = DateTime.MinValue;
+    private int connectionRevision;
     private readonly SmartRouteLearner learner = new();
     private readonly DispatcherTimer learnTimer = new() { Interval = TimeSpan.FromSeconds(7) };
     private readonly DispatcherTimer learnedRulesBatchTimer = new()
@@ -28,6 +32,11 @@ public partial class MainWindow : Window
     private AppSettings settings = new();
     private List<RouteRule> rules = new();
     private List<ProxyNode> nodes = new();
+    private List<SubscriptionProfile> profiles = new();
+    private readonly Dictionary<string, List<ProxyNode>> profileNodes = new();
+    private bool suppressProfileSelection;
+    // Isolated UI tests can accept deletion without a modal dialog.
+    private Func<SubscriptionProfile, bool>? confirmRemoveSubscriptionOverride = null;
     private bool importing, testing;
     private bool firstRunScreenHandled;
     private bool startupSubscriptionLoadStarted;
@@ -36,7 +45,7 @@ public partial class MainWindow : Window
     private GitHubUpdate? readyUpdate;
     // Injectable to test startup without contacting a real subscription server.
     public Func<string, Task<SubscriptionImporter.Result>> StartupSubscriptionLoader { get; set; }
-        = SubscriptionImporter.LoadAsync;
+        = url => SubscriptionImporter.LoadAsync(url);
     private readonly Queue<string> observedTraffic = new();
     private readonly HashSet<string> observedQueued = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> expandedServices = new(StringComparer.OrdinalIgnoreCase);
@@ -105,7 +114,8 @@ public partial class MainWindow : Window
             if (addedAi > 0) UserStore.BackupRoutesBeforeServicePresets();
             UserStore.SaveRules(rules);
         }
-        SubscriptionBox.Text = UserStore.DecryptUrl(settings.ProtectedUrl);
+        profiles = SubscriptionProfileStore.Load(settings);
+        RefreshSubscriptionList(profiles.FirstOrDefault());
         AutoLearnBox.IsChecked = settings.AutoLearn;
         TunBox.IsChecked = settings.Tun;
         ModeBox.SelectedIndex = settings.Mode == "vpn" ? 1 : settings.Mode == "direct" ? 2 : 0;
@@ -299,9 +309,8 @@ public partial class MainWindow : Window
         settings.Tun = TunBox.IsChecked == true;
         settings.AutoLearn = AutoLearnBox.IsChecked == true;
         settings.SelectedNode = (ServerBox.SelectedItem as ProxyNode)?.Name ?? settings.SelectedNode;
-        var url = SubscriptionBox.Text.Trim();
-        if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == "https")
-            settings.ProtectedUrl = UserStore.EncryptUrl(url);
+        if (SubscriptionList.SelectedItem is SubscriptionProfile selectedProfile)
+            settings.ProtectedUrl = selectedProfile.ProtectedUrl;
         UserStore.SaveSettings(settings);
     }
     private void ShowOnboarding()
@@ -320,186 +329,315 @@ public partial class MainWindow : Window
         MainTabs.SelectedIndex = 0;
     }
 
-    private async Task LoadSavedSubscriptionAsync()
+    private void RefreshSubscriptionList(SubscriptionProfile? chosen = null)
     {
-        // One automatic import per application window, never an automatic VPN connection.
-        if (startupSubscriptionLoadStarted) return;
-        startupSubscriptionLoadStarted = true;
-        string url = UserStore.DecryptUrl(settings.ProtectedUrl).Trim();
-        if (!SubscriptionImporter.IsValidUrl(url)
-            || !string.Equals(SubscriptionBox.Text.Trim(), url, StringComparison.Ordinal)
-            || importing) return;
+        suppressProfileSelection = true;
+        string? id = chosen?.Id ?? (SubscriptionList.SelectedItem as SubscriptionProfile)?.Id;
+        SubscriptionList.ItemsSource = null;
+        SubscriptionList.ItemsSource = profiles.ToList();
+        SubscriptionList.SelectedItem = profiles.FirstOrDefault(p => p.Id == id);
+        suppressProfileSelection = false;
+        DisplaySelectedSubscription();
+        ImportSummary.Text = $"{profiles.Count} подписок • {nodes.Count} серверов";
+    }
 
-        if (SubscriptionCache.TryLoad(url, out var cached, out var savedUtc))
+    private void DisplaySelectedSubscription()
+    {
+        if (suppressProfileSelection) return;
+        var selected = SubscriptionList.SelectedItem as SubscriptionProfile;
+        SubscriptionNameBox.Text = selected?.Name ?? "";
+        SubscriptionBox.Text = selected?.Url ?? "";
+        string selectedFormat = selected?.Format ?? "auto";
+        foreach (var option in SubscriptionFormatBox.Items.OfType<ComboBoxItem>())
+            if ((string?)option.Tag == selectedFormat)
+            {
+                SubscriptionFormatBox.SelectedItem = option;
+                break;
+            }
+        RemoveSubscriptionButton.IsEnabled = selected != null;
+        ProfileStatusText.Text = selected == null
+            ? "Укажи название и HTTPS-ссылку нового источника"
+            : $"{selected.NodeCount} серверов • {selected.DetectedFormat}" +
+              (selected.LastUpdatedUtc.HasValue
+                  ? $" • {selected.LastUpdatedUtc.Value.ToLocalTime():dd.MM HH:mm}" : "");
+    }
+
+    private void SubscriptionList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        => DisplaySelectedSubscription();
+
+    private void NewSubscription_Click(object sender, RoutedEventArgs e)
+    {
+        SubscriptionList.SelectedItem = null;
+        SubscriptionNameBox.Focus();
+    }
+
+    private void RemoveSubscription_Click(object sender, RoutedEventArgs e)
+    {
+        if (importing || SubscriptionList.SelectedItem is not SubscriptionProfile selected) return;
+        bool confirmed = confirmRemoveSubscriptionOverride != null
+            ? confirmRemoveSubscriptionOverride(selected)
+            : MessageBox.Show(this,
+                $"Удалить подписку «{selected.Name}» и убрать её серверы из списка?\n" +
+                "Текущее VPN-соединение не будет разорвано.",
+                "Удаление подписки", MessageBoxButton.YesNo, MessageBoxImage.Question,
+                MessageBoxResult.No) == MessageBoxResult.Yes;
+        if (!confirmed) return;
+        try
         {
-            nodes = cached;
+            var next = profiles.Where(p => p.Id != selected.Id).ToList();
+            SubscriptionProfileStore.Save(next);
+            profiles = next;
+            profileNodes.Remove(selected.Id);
+            if (profiles.Count == 0) settings.ProtectedUrl = "";
+            else settings.ProtectedUrl = profiles[0].ProtectedUrl;
+            UserStore.SaveSettings(settings);
+            RebuildServerList();
+            RefreshSubscriptionList(profiles.FirstOrDefault());
+            AppendLog("Удалена подписка: " + selected.Name);
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Не удалось удалить подписку: " + ex.GetType().Name);
+            ProfileStatusText.Text = "Не удалось сохранить удаление.";
+        }
+    }
+
+    private void RebuildServerList()
+    {
+        var preferred = (ServerBox.SelectedItem as ProxyNode)?.Name ?? settings.SelectedNode;
+        var merged = SubscriptionProfileStore.Merge(profiles
+            .Where(p => profileNodes.ContainsKey(p.Id))
+            .Select(p => (p, (IReadOnlyList<ProxyNode>)profileNodes[p.Id])));
+        nodes = merged;
+        // Rebinding the list must never cause a VPN reconnect on its own.
+        bool wasImporting = importing;
+        importing = true;
+        try
+        {
+            ServerBox.ItemsSource = null;
             ServerBox.ItemsSource = nodes;
-            ServerBox.SelectedItem = nodes.FirstOrDefault(n => n.Name == settings.SelectedNode)
+            ServerBox.SelectedItem = nodes.FirstOrDefault(n => n.Name == preferred)
+                ?? nodes.FirstOrDefault(n => n.Name.EndsWith(" · " + preferred, StringComparison.Ordinal))
                 ?? nodes.FirstOrDefault();
             RefreshNodeChoices();
             UpdateEngineInfo();
-            ImportSummary.Text = $"{nodes.Count} серверов из защищённого кэша";
-            AppendLog($"Восстановлены серверы из кэша ({savedUtc.ToLocalTime():dd.MM HH:mm}).");
         }
+        finally { importing = wasImporting; }
+        ImportSummary.Text = $"{profiles.Count} подписок • {nodes.Count} серверов";
+    }
+
+    private void StoreImportedProfile(SubscriptionProfile profile,
+        SubscriptionImporter.Result imported, bool persist, bool select = true)
+    {
+        profileNodes[profile.Id] = imported.Nodes;
+        profile.NodeCount = imported.Nodes.Count;
+        profile.LastUpdatedUtc = DateTime.UtcNow;
+        profile.DetectedFormat = imported.DetectedFormat;
+        if (persist)
+        {
+            SubscriptionProfileStore.Save(profiles);
+            SubscriptionCache.Save(profile.Url, imported.Nodes);
+        }
+        RebuildServerList();
+        if (select) RefreshSubscriptionList(profile);
+    }
+
+    private void ApplyImportedSubscription(SubscriptionImporter.Result imported)
+    {
+        var profile = profiles.FirstOrDefault(p =>
+            string.Equals(p.Url, imported.SubscriptionUrl, StringComparison.Ordinal))
+            ?? new SubscriptionProfile
+            {
+                Name = "ProstoKVN — основная",
+                ProtectedUrl = UserStore.EncryptUrl(imported.SubscriptionUrl),
+                Format = "auto"
+            };
+        if (!profiles.Contains(profile)) profiles.Add(profile);
+        settings.ProtectedUrl = profile.ProtectedUrl; // Keep rollback compatibility.
+        StoreImportedProfile(profile, imported, persist: true);
+        UserStore.SaveSettings(settings);
+        AppendLog($"Подписка настроена: {profile.Name}, {imported.Nodes.Count} серверов.");
+    }
+
+    private async Task LoadSavedSubscriptionAsync()
+    {
+        if (startupSubscriptionLoadStarted) return;
+        startupSubscriptionLoadStarted = true;
+        if (profiles.Count == 0) return;
+
+        foreach (var profile in profiles)
+        {
+            if (!SubscriptionCache.TryLoad(profile.Url, out var cached, out _)) continue;
+            profileNodes[profile.Id] = cached;
+            profile.NodeCount = cached.Count;
+        }
+        if (profileNodes.Count > 0)
+        {
+            RebuildServerList();
+            RefreshSubscriptionList(profiles.FirstOrDefault());
+            AppendLog($"Восстановлено {nodes.Count} серверов из защищённого кэша.");
+        }
+        await RefreshAllSubscriptionsAsync(startup: true);
+    }
+
+    private async void RefreshAllSubscriptions_Click(object sender, RoutedEventArgs e)
+        => await RefreshAllSubscriptionsAsync();
+
+    private async Task RefreshAllSubscriptionsAsync(bool startup = false)
+    {
+        if (importing || profiles.Count == 0) return;
         importing = true;
-        ConnectButton.IsEnabled = false;
         ImportButton.IsEnabled = false;
         RefreshButton.IsEnabled = false;
-        ImportSummary.Text = nodes.Count > 0 ? $"{nodes.Count} серверов • обновляю..." : "Загружаю серверы...";
-        EngineInfoLabel.Text = "Загрузка сохранённой подписки...";
-        AppendLog("Загружаю список серверов из сохранённой подписки.");
+        RefreshAllSubscriptionsButton.IsEnabled = false;
         try
         {
-            var imported = await StartupSubscriptionLoader(url);
-            if (isWindowClosing) return;
-            // Never replace a subscription being edited while the request is in flight.
-            if (!string.Equals(SubscriptionBox.Text.Trim(), url, StringComparison.Ordinal))
+            int failures = 0;
+            bool staleEdit = false;
+            var snapshot = profiles.ToArray();
+            foreach (var profile in snapshot)
             {
-                AppendLog("Подписка изменена во время загрузки; устаревший ответ пропущен.");
-                ImportSummary.Text = "Ссылка изменена";
-                UpdateEngineInfo();
-                return;
+                if (isWindowClosing) return;
+                string url = profile.Url;
+                if (!SubscriptionImporter.IsValidUrl(url)) continue;
+                try
+                {
+                    // The injectable loader is retained for offline startup tests.
+                    var result = startup && profile.Format == "auto"
+                        ? await StartupSubscriptionLoader(url)
+                        : await SubscriptionImporter.LoadAsync(url, profile.Format);
+                    if (isWindowClosing) return;
+                    if (!profiles.Contains(profile) || profile.Url != url) continue;
+                    // Don't overwrite an in-progress edit for the currently selected URL.
+                    if (startup && ReferenceEquals(SubscriptionList.SelectedItem, profile)
+                        && SubscriptionBox.Text.Trim() != url)
+                    {
+                        staleEdit = true;
+                        ImportSummary.Text = "Ссылка изменена";
+                        AppendLog("Устаревший ответ подписки пропущен.");
+                        continue;
+                    }
+                    StoreImportedProfile(profile, result, persist: true, select: false);
+                    AppendLog($"Обновлена подписка «{profile.Name}»: {result.Nodes.Count} серверов.");
+                }
+                catch (Exception ex)
+                {
+                    failures++;
+                    AppendLog($"Не удалось обновить «{profile.Name}»: {ex.GetType().Name}.");
+                }
             }
-            ApplyImportedSubscription(imported);
-            AppendLog("Список серверов загружен автоматически.");
-        }
-        catch (Exception)
-        {
-            if (!isWindowClosing)
-            {
+            RebuildServerList();
+            if (!staleEdit)
+                RefreshSubscriptionList(SubscriptionList.SelectedItem as SubscriptionProfile
+                    ?? profiles.FirstOrDefault());
+            if (staleEdit)
+                ImportSummary.Text = "Ссылка изменена";
+            else if (failures > 0)
                 ImportSummary.Text = nodes.Count > 0
                     ? $"{nodes.Count} серверов • кэш, обновление недоступно"
-                    : "Не удалось загрузить серверы";
-                UpdateEngineInfo();
-                AppendLog(nodes.Count > 0
-                    ? "HTTPS-подписка недоступна; оставлен защищённый список серверов."
-                    : "HTTPS-подписка недоступна. Проверь VPN и нажми «Обновить серверы».");
-            }
+                    : "Не удалось обновить подписки";
+            else
+                ImportSummary.Text = $"{profiles.Count} подписок • {nodes.Count} серверов";
         }
         finally
         {
             importing = false;
             if (!isWindowClosing)
             {
-                ConnectButton.IsEnabled = true;
                 ImportButton.IsEnabled = true;
                 RefreshButton.IsEnabled = true;
+                RefreshAllSubscriptionsButton.IsEnabled = true;
             }
         }
     }
 
-    private void ApplyImportedSubscription(SubscriptionImporter.Result imported)
-    {
-        nodes = imported.Nodes;
-        SubscriptionBox.Text = imported.SubscriptionUrl;
-        ServerBox.ItemsSource = null;
-        ServerBox.ItemsSource = nodes;
-        ServerBox.SelectedItem = nodes.FirstOrDefault(n => n.Name == settings.SelectedNode)
-            ?? nodes.FirstOrDefault(n => Convert.ToString(n.Values["type"]) == "hysteria2")
-            ?? nodes[0];
-        RefreshNodeChoices();
-        UpdateEngineInfo();
-        ImportSummary.Text = imported.Summary;
-        Persist();
-        SubscriptionCache.Save(imported.SubscriptionUrl, nodes);
-        AppendLog($"Подписка успешно настроена: {nodes.Count} серверов.");
-    }
-
-    private static string ChangeSubscriptionPath(string url, string path)
-    {
-        var uri = new Uri(url);
-        var builder = new UriBuilder(uri);
-        string[] tokens = builder.Path.Trim('/').Split('/');
-        if (tokens.Length >= 2 && (tokens[0] == "json" || tokens[0] == "sub"))
-            tokens[0] = path;
-        builder.Path = "/" + string.Join("/", tokens);
-        return builder.Uri.AbsoluteUri;
-    }
     private async Task ImportAsync()
     {
         if (importing) return;
+        string url = SubscriptionBox.Text.Trim();
+        string name = SubscriptionNameBox.Text.Trim();
+        string format = (SubscriptionFormatBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "auto";
+        if (!SubscriptionImporter.IsValidUrl(url))
+        {
+            ProfileStatusText.Text = "Укажи корректную HTTPS-ссылку.";
+            return;
+        }
+        if (name.Length == 0) name = "Подписка " + (profiles.Count + 1);
+        if (profiles.Count >= 30 && SubscriptionList.SelectedItem is not SubscriptionProfile)
+        {
+            ProfileStatusText.Text = "Максимум 30 подписок.";
+            return;
+        }
+
         importing = true;
         ImportButton.IsEnabled = false;
+        RefreshButton.IsEnabled = false;
+        RefreshAllSubscriptionsButton.IsEnabled = false;
+        ProfileStatusText.Text = "Определяю формат и загружаю серверы...";
         try
         {
-            var url = SubscriptionBox.Text.Trim();
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
-                throw new InvalidOperationException("Введи HTTPS-ссылку подписки.");
-            var jsonUrl = ChangeSubscriptionPath(url, "json");
-            var subUrl = ChangeSubscriptionPath(url, "sub");
-            var results = new List<ProxyNode>();
-            var errors = new List<string>();
-            try
+            var imported = await SubscriptionImporter.LoadAsync(url, format);
+            if (isWindowClosing) return;
+            var selected = SubscriptionList.SelectedItem as SubscriptionProfile;
+            var duplicate = profiles.FirstOrDefault(p => p.Url == url && p.Id != selected?.Id);
+            if (duplicate != null)
+                throw new InvalidOperationException("Эта подписка уже добавлена.");
+            if (selected == null)
             {
-                var fromJson = await JsonSubscription.LoadAsync(jsonUrl);
-                results.AddRange(fromJson);
-                AppendLog($"JSON: получено {fromJson.Count} совместимых узлов.");
+                selected = new SubscriptionProfile();
+                profiles.Add(selected);
             }
-            catch (Exception ex) { errors.Add("JSON: " + ex.Message); }
-            try
-            {
-                var (fromSub, skipped) = await SubscriptionReader.LoadAsync(subUrl);
-                var known = new HashSet<string>(results.Select(Key), StringComparer.Ordinal);
-                int added = 0;
-                foreach (var n in fromSub)
-                    if (known.Add(Key(n))) { results.Add(n); added++; }
-                AppendLog($"SUB: найдено {fromSub.Count}, добавлено {added}; пропущено {skipped.Count}.");
-            }
-            catch (Exception ex) { errors.Add("SUB: " + ex.Message); }
-            if (results.Count == 0) throw new InvalidOperationException("Не удалось загрузить узлы. " + string.Join("; ", errors));
-            int suffix = 1;
-            var usedNames = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var n in results)
-            {
-                string name = n.Name;
-                suffix = 1;
-                while (!usedNames.Add(n.Name)) n.Name = name + " #" + ++suffix;
-                n.Values["name"] = n.Name;
-            }
-            nodes = results;
-            ServerBox.ItemsSource = null;
-            ServerBox.ItemsSource = nodes;
-            ServerBox.SelectedItem = nodes.FirstOrDefault(x => x.Name == settings.SelectedNode)
-                ?? nodes.FirstOrDefault(x => Convert.ToString(x.Values["type"]) == "hysteria2")
-                ?? nodes[0];
-            RefreshNodeChoices();
-            UpdateEngineInfo();
-            ImportSummary.Text = $"{nodes.Count} серверов";
-            Persist();
-            SubscriptionCache.Save(url, nodes);
-            AppendLog($"Подписка импортирована: {nodes.Count} узлов. " + (errors.Count > 0 ? "Часть форматов недоступна." : ""));
+            string previousId = selected.Id;
+            string previousUrl = selected.Url;
+            selected.Name = name;
+            selected.ProtectedUrl = UserStore.EncryptUrl(url);
+            selected.Format = format;
+            if (previousUrl.Length > 0 && previousUrl != url)
+                profileNodes.Remove(previousId);
+            settings.ProtectedUrl = selected.ProtectedUrl; // One legacy fallback for rollback.
+            StoreImportedProfile(selected, imported, persist: true);
+            UserStore.SaveSettings(settings);
+            AppendLog($"Добавлена/обновлена подписка «{selected.Name}»: {imported.Nodes.Count} серверов.");
         }
         catch (Exception ex)
         {
-            ImportSummary.Text = nodes.Count > 0
-                ? $"{nodes.Count} серверов • обновление недоступно"
-                : "Ошибка загрузки подписки";
-            AppendLog("Ошибка обновления подписки: " + ex.GetType().Name
-                + ". Проверь VPN-маршрут или повтори попытку.");
+            ProfileStatusText.Text = "Не удалось импортировать. Проверь ссылку и формат.";
+            AppendLog("Импорт подписки: " + ex.GetType().Name);
         }
-        finally { importing = false; ImportButton.IsEnabled = true; }
+        finally
+        {
+            importing = false;
+            ImportButton.IsEnabled = true;
+            RefreshButton.IsEnabled = true;
+            RefreshAllSubscriptionsButton.IsEnabled = true;
+        }
     }
-    private static string Key(ProxyNode n)
-    {
-        string S(string key) => n.Values.TryGetValue(key, out var value) ? Convert.ToString(value) ?? "" : "";
-        return string.Join("|", S("type"), S("server"), S("port"), S("uuid"), S("network"));
-    }
+
     private async void Import_Click(object sender, RoutedEventArgs e) => await ImportAsync();
-    private async void Refresh_Click(object sender, RoutedEventArgs e) => await ImportAsync();
+    private async void Refresh_Click(object sender, RoutedEventArgs e)
+        => await RefreshAllSubscriptionsAsync();
+
     private async void Connect_Click(object sender, RoutedEventArgs e)
     {
         ConnectButton.IsEnabled = false;
         try
         {
-            if (nodes.Count == 0 && !SubscriptionImporter.IsValidUrl(SubscriptionBox.Text))
+            if (nodes.Count == 0 && profiles.Count == 0)
             {
-                ShowOnboarding();
-                return;
+                if (SubscriptionImporter.IsValidUrl(SubscriptionBox.Text))
+                    await ImportAsync();
+                else
+                {
+                    ShowOnboarding();
+                    return;
+                }
             }
-            if (nodes.Count == 0 && SubscriptionImporter.IsValidUrl(SubscriptionBox.Text))
-                await ImportAsync();
+            if (nodes.Count == 0 && profiles.Count > 0)
+                await RefreshAllSubscriptionsAsync();
             if (nodes.Count == 0) return;
             recovery.Enable();
+            ++connectionRevision;
+            vpnExitVerified = false;
             await core.StartAsync(nodes, rules, settings);
             meter.Reset();
             recovery.Healthy();
@@ -517,6 +655,8 @@ public partial class MainWindow : Window
     }
     private void Disconnect_Click(object sender, RoutedEventArgs e)
     {
+        ++connectionRevision;
+        vpnExitVerified = false;
         recovery.Disable();
         core.Stop();
         meter.Reset();
@@ -553,6 +693,8 @@ public partial class MainWindow : Window
         try
         {
             ConnectButton.IsEnabled = false;
+            ++connectionRevision;
+            vpnExitVerified = false;
             await core.StartAsync(nodes, rules, settings);
             learner.ResetExitCountries();
             await VerifyConnectedAsync();
@@ -563,23 +705,53 @@ public partial class MainWindow : Window
     }
     private async Task VerifyConnectedAsync()
     {
-        if (settings.Mode == "direct") { StatusLabel.Text = "Прямое соединение активно"; return; }
-        StatusLabel.Text = "Проверяю подключение...";
+        if (settings.Mode == "direct")
+        {
+            vpnExitVerified = false;
+            StatusLabel.Text = "Прямое соединение активно";
+            return;
+        }
+        if (!core.IsRunning || vpnVerificationBusy) return;
+
+        vpnVerificationBusy = true;
+        int revision = connectionRevision;
+        if (!vpnExitVerified) StatusLabel.Text = "Проверяю VPN-выход...";
         try
         {
-            // Verify the actual outbound VPN proxy, not one Cloudflare page.
-            // The selected server may be healthy while that page returns
-            // anti-bot HTTP 403; avoid mislabeling it as a failed connection.
+            // Do not confuse an active local proxy process with a verified
+            // VPN exit. After a cold start, the server may need time to dial.
+            // MonitorTickAsync will retry this check without reconnecting.
             var verification = await ConnectionVerifier.VerifyAsync();
+            if (revision != connectionRevision || !core.IsRunning || !recovery.Desired)
+                return;
+
+            vpnExitVerified = verification.Verified;
             StatusLabel.Text = verification.Verified
                 ? "Подключено • VPN-выход подтверждён."
                 : "Соединение запущено • VPN-выход не подтверждён.";
             StatusLabel.Foreground = verification.Verified
                 ? System.Windows.Media.Brushes.LightGreen
                 : System.Windows.Media.Brushes.Orange;
+            RecoveryText.Text = ConnectionStatusPolicy.MonitorText(vpnExitVerified);
             AppendLog("Проверка соединения: " + verification.Detail);
         }
-        catch (Exception ex) { StatusLabel.Text = "Не удалось проверить соединение"; AppendLog("Проверка соединения: " + ex.Message); }
+        catch (Exception ex)
+        {
+            if (revision != connectionRevision || !core.IsRunning || !recovery.Desired)
+                return;
+            vpnExitVerified = false;
+            StatusLabel.Text = "Соединение запущено • проверка VPN-выхода недоступна.";
+            StatusLabel.Foreground = System.Windows.Media.Brushes.Orange;
+            RecoveryText.Text = ConnectionStatusPolicy.MonitorText(false);
+            AppendLog("Проверка соединения: " + ex.GetType().Name);
+        }
+        finally
+        {
+            // Rate-limit failed checks. Never block normal network traffic.
+            if (revision == connectionRevision)
+                lastVpnVerificationUtc = DateTime.UtcNow;
+            vpnVerificationBusy = false;
+        }
     }
     private void ScheduleLearnedRulesApply()
     {
@@ -675,8 +847,18 @@ public partial class MainWindow : Window
     }
     private void RulesList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (RulesList.SelectedItem is not RouteRule selected || RuleLabelBox == null)
+        if (SelectedRuleHint == null || RemoveRuleButton == null) return;
+        if (RulesList.SelectedItem is not RouteRule selected)
+        {
+            SelectedRuleHint.Text = "Выбери правило — правый клик откроет действия";
+            SelectedRuleHint.ToolTip = null;
+            RemoveRuleButton.IsEnabled = false;
             return;
+        }
+        SelectedRuleHint.Text = "Выбрано: " + selected.Domain;
+        SelectedRuleHint.ToolTip = selected.ToString();
+        RemoveRuleButton.IsEnabled = true;
+        if (RuleLabelBox == null) return;
         // Selecting an existing rule loads it into the editor. Saving makes
         // the updated entry manual, protecting the name from auto-learning.
         DomainBox.Text = selected.Domain;
@@ -692,6 +874,54 @@ public partial class MainWindow : Window
         int nodeIndex = nodes.FindIndex(n => n.Name == selected.PreferredNode);
         RuleNodeBox.SelectedIndex = nodeIndex >= 0 ? nodeIndex + 1 : 0;
     }
+
+    // A right click must target its own row, not a different previously
+    // selected rule. The selection highlight persists while the menu is open.
+    private void RuleItem_RightButtonDown(object sender,
+        System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (sender is not ListBoxItem { DataContext: RouteRule clicked } row
+            || !rules.Contains(clicked))
+            return;
+
+        RulesList.SelectedItem = clicked;
+        // The empty ContextMenu is declared in XAML so WPF can open it on
+        // the very first right-click. Build each item's actions on demand.
+        if (row.ContextMenu is not ContextMenu menu) return;
+        menu.Items.Clear();
+        var edit = new MenuItem { Header = "Изменить правило" };
+        edit.Click += RuleContextEdit_Click;
+        var delete = new MenuItem { Header = "Удалить правило" };
+        delete.Click += RuleContextDelete_Click;
+        menu.Items.Add(edit);
+        menu.Items.Add(new Separator());
+        menu.Items.Add(delete);
+    }
+
+    private RouteRule? RuleFromContextMenu(object sender)
+    {
+        if (sender is MenuItem { Parent: ContextMenu menu }
+            && menu.PlacementTarget is ListBoxItem { DataContext: RouteRule clicked }
+            && rules.Contains(clicked))
+            return clicked;
+        return RulesList.SelectedItem as RouteRule;
+    }
+
+    private void RuleContextEdit_Click(object sender, RoutedEventArgs e)
+    {
+        if (RuleFromContextMenu(sender) is not RouteRule rule) return;
+        RulesList.SelectedItem = rule;
+        AddRuleSection.IsExpanded = true;
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            RulesPageScroll.ScrollToTop();
+            RuleLabelBox.Focus();
+            RuleLabelBox.SelectAll();
+        }));
+    }
+
+    private async void RuleContextDelete_Click(object sender, RoutedEventArgs e)
+        => await DeleteRuleAsync(RuleFromContextMenu(sender));
     private async void AddRule_Click(object sender, RoutedEventArgs e)
     {
         if (!RouteTarget.TryParse(DomainBox.Text, out var target))
@@ -744,16 +974,60 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) { ProbeResult.Text = "Проверка не завершена: " + ex.Message; }
     }
+    private bool ruleDeleteBusy;
+    // Test-only confirmation override for isolated UI regression tests.
+    private Func<RouteRule, bool>? confirmDeleteOverride = null;
+
     private async void RemoveRule_Click(object sender, RoutedEventArgs e)
+        => await DeleteRuleAsync(RulesList.SelectedItem as RouteRule);
+
+    private async Task DeleteRuleAsync(RouteRule? selected)
     {
-        if (RulesList.SelectedItem is not RouteRule selected) return;
-        rules.Remove(selected);
-        UserStore.SaveRules(rules);
-        RefreshRules();
-        DomainBox.Clear();
-        RuleLabelBox.Clear();
-        RuleNodeBox.SelectedIndex = 0;
-        await ReloadRulesSafeAsync();
+        if (selected == null || !rules.Contains(selected) || ruleDeleteBusy) return;
+
+        string additional = selected.Manual ? ""
+            : "\nЭто автоматическое правило может появиться снова при обучении маршрутов.";
+        bool confirmed = confirmDeleteOverride != null
+            ? confirmDeleteOverride(selected)
+            : MessageBox.Show(this,
+                $"Удалить правило «{selected.Domain}»?\nМаршрут: " +
+                (selected.Route == "VEGA" ? "СЕРВЕР" : selected.Route) +
+                additional + "\n\nИзменение будет сохранено и применено к VPN.",
+                "Удаление правила • ProstoKVN",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning,
+                MessageBoxResult.No) == MessageBoxResult.Yes;
+        if (!confirmed) return;
+
+        ruleDeleteBusy = true;
+        try
+        {
+            if (!rules.Remove(selected)) return;
+            try
+            {
+                UserStore.SaveRules(rules);
+            }
+            catch
+            {
+                rules.Add(selected);
+                RefreshRules();
+                throw;
+            }
+            RefreshRules();
+            RulesList.SelectedItem = null;
+            DomainBox.Clear();
+            RuleLabelBox.Clear();
+            RuleNodeBox.SelectedIndex = 0;
+            AppendLog("Удалено правило: " + selected.Domain);
+            await ReloadRulesSafeAsync();
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Не удалось удалить правило: " + ex.GetType().Name);
+            MessageBox.Show(this,
+                "Не удалось сохранить удаление правила. Проверь права доступа к настройкам.",
+                "ProstoKVN", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally { ruleDeleteBusy = false; }
     }
     private async void Probe_Click(object sender, RoutedEventArgs e)
     {
@@ -794,10 +1068,14 @@ public partial class MainWindow : Window
     {
         if (monitorBusy || !recovery.Desired || nodes.Count == 0) return;
         monitorBusy = true;
+        int monitorRevision = connectionRevision;
         try
         {
             if (!core.IsTransportHealthy)
             {
+                vpnExitVerified = false;
+                StatusLabel.Text = "Сетевые ядра недоступны • ожидаю восстановления.";
+                StatusLabel.Foreground = System.Windows.Media.Brushes.Orange;
                 if (recovery.ShouldRecover(false, DateTime.UtcNow))
                 {
                     recovery.Failed(DateTime.UtcNow);
@@ -805,6 +1083,8 @@ public partial class MainWindow : Window
                     AppendLog(RecoveryText.Text);
                     try
                     {
+                        ++connectionRevision;
+                        vpnExitVerified = false;
                         await core.StartAsync(nodes, rules, settings);
                         meter.Reset();
                         RecoveryText.Text = "Ядра восстановлены, проверяю соединение";
@@ -824,6 +1104,8 @@ public partial class MainWindow : Window
             {
                 // An HTTP check runs at most once per ~48 seconds, not every tick.
                 var snapshot = await core.ReadMonitorAsync(meter, measureDelay: true);
+                if (monitorRevision != connectionRevision || !recovery.Desired || !core.IsRunning)
+                    return;
                 LatencyText.Text = snapshot.HttpsLatencyMs.HasValue
                     ? $"HTTPS-задержка: {snapshot.HttpsLatencyMs} мс"
                     : "HTTPS-задержка: измерение недоступно";
@@ -832,15 +1114,29 @@ public partial class MainWindow : Window
             else
             {
                 var snapshot = await core.ReadMonitorAsync(meter, measureDelay: false);
+                if (monitorRevision != connectionRevision || !recovery.Desired || !core.IsRunning)
+                    return;
                 UpdateUdp(snapshot);
             }
             recovery.ObserveHealthy(DateTime.UtcNow);
-            RecoveryText.Text = "VPN работает • контроль каждые 12 секунд";
+            // If the first verification ran before the VPN dial completed,
+            // retry while local cores stay up. No disconnect or engine restart.
+            if (ConnectionStatusPolicy.ShouldRetry(recovery.Desired,
+                core.IsTransportHealthy, vpnExitVerified, vpnVerificationBusy,
+                lastVpnVerificationUtc, DateTime.UtcNow))
+                await VerifyConnectedAsync();
+            if (monitorRevision != connectionRevision || !recovery.Desired || !core.IsRunning)
+                return;
+            RecoveryText.Text = ConnectionStatusPolicy.MonitorText(vpnExitVerified,
+                settings.Mode == "direct");
         }
         catch (Exception ex)
         {
-            RecoveryText.Text = "Диагностика недоступна: " + ex.GetType().Name;
-            AppendLog("Монитор соединения: " + ex.Message);
+            if (monitorRevision == connectionRevision && recovery.Desired)
+            {
+                RecoveryText.Text = "Диагностика недоступна: " + ex.GetType().Name;
+                AppendLog("Монитор соединения: " + ex.Message);
+            }
             // Do not restart healthy transport processes merely because an HTTP
             // latency probe or local telemetry request has timed out.
         }

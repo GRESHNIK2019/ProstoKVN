@@ -33,7 +33,10 @@ public static class SubscriptionTransportTests
         };
         Check(SubscriptionCache.Save(url, new List<ProxyNode> { node }),
             "DPAPI encrypted cache write");
-        string raw = File.ReadAllText(Path.Combine(UserStore.Home, "subscription-cache.json"));
+        string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(url.Trim())));
+        string raw = File.ReadAllText(Path.Combine(UserStore.Home,
+            "subscription-caches", hash + ".json"));
         Check(!raw.Contains("SECRET_TEST_108492") && !raw.Contains("hidden-token"),
             "No proxy credentials or subscription token in plaintext cache");
         Check(SubscriptionCache.TryLoad(url, out var cached, out _)

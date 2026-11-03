@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$Version = '0.29.2',
+    [string]$Version = '0.30.0',
     [string]$SignTool = '',
     [string]$CertificateThumbprint = '',
     [switch]$AllowUnsignedDev
@@ -32,6 +32,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Сборка обновлятора не удалась.' }
     Copy-Item (Join-Path $old 'core') (Join-Path $out 'core') -Recurse
     Copy-Item (Join-Path $old 'licenses') (Join-Path $out 'licenses') -Recurse
+    Copy-Item (Join-Path $root 'release\licenses\YamlDotNet-MIT.txt') (Join-Path $out 'licenses\YamlDotNet-MIT.txt')
     if (-not $AllowUnsignedDev) {
         foreach ($file in @(
             (Join-Path $out 'ProstoKVN.exe'),

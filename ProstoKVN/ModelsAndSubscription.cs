@@ -172,8 +172,16 @@ public static class SubscriptionReader
     {
         if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var address) || address.Scheme != "https")
             throw new InvalidOperationException("Укажи действительную HTTPS-ссылку подписки.");
-        string body = (await SubscriptionTransport.GetStringAsync(address.AbsoluteUri)).Trim();
-        if (!body.Contains("://", StringComparison.Ordinal) && !body.Contains("\n"))
+        string body = await SubscriptionTransport.GetStringAsync(address.AbsoluteUri);
+        return ParseContent(body);
+    }
+
+    public static (List<ProxyNode> Nodes, List<string> Skipped) ParseContent(string response)
+    {
+        if (response.Length > UniversalSubscriptionParser.MaxResponseChars)
+            throw new InvalidOperationException("Подписка слишком большая.");
+        string body = response.Trim();
+        if (!body.Contains("://", StringComparison.Ordinal))
         {
             try { body = Encoding.UTF8.GetString(Convert.FromBase64String(PadBase64(body))); }
             catch (FormatException) { throw new InvalidOperationException("Ответ не похож на поддерживаемую подписку /sub/."); }

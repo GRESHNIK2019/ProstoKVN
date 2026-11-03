@@ -99,8 +99,8 @@ public static class GitHubUpdateTests
             if (!string.IsNullOrWhiteSpace(real) && File.Exists(real))
             {
                 string checksum = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(real)));
-                var prod = new GitHubUpdate(new Version(0,29,2), "v0.29.2",
-                    "https://github.com/GRESHNIK2019/ProstoKVN/releases/download/v0.29.2/ProstoKVN-v0.29.2-win-x64.zip",
+                var prod = new GitHubUpdate(new Version(0,30,0), "v0.30.0",
+                    "https://github.com/GRESHNIK2019/ProstoKVN/releases/download/v0.30.0/ProstoKVN-v0.30.0-win-x64.zip",
                     checksum, new FileInfo(real).Length, "");
                 GitHubUpdateService.TestDownload = (_, dest, _, _) =>
                 {
@@ -110,8 +110,10 @@ public static class GitHubUpdateTests
                 string prodStage = await GitHubUpdateService.StageAsync(prod);
                 Assert(File.Exists(Path.Combine(prodStage, "payload", "ProstoKVN.exe"))
                     && File.Exists(Path.Combine(prodStage, "payload", "updater", "ProstoKVN.Updater.exe"))
-                    && File.Exists(Path.Combine(prodStage, "payload", "updater", "ProstoKVN.Updater.runtimeconfig.json")),
-                    "Real release archive passes secure staging and includes updater runtime");
+                    && File.Exists(Path.Combine(prodStage, "payload", "updater", "ProstoKVN.Updater.runtimeconfig.json"))
+                    && File.Exists(Path.Combine(prodStage, "payload", "YamlDotNet.dll"))
+                    && File.Exists(Path.Combine(prodStage, "payload", "licenses", "YamlDotNet-MIT.txt")),
+                    "Real release archive securely stages updater, YAML parser and license");
                 var manifest = JsonSerializer.Deserialize<System.Collections.Generic.Dictionary<string, string>>(
                     File.ReadAllText(Path.Combine(prodStage, "hashes.json")))!;
                 Assert(manifest.Count > 8, "Real release has per-file SHA-256 manifest");

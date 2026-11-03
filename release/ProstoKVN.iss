@@ -1,7 +1,7 @@
 ﻿#define MyAppName "ProstoKVN"
-#define MyAppVersion "0.29.2"
+#define MyAppVersion "0.30.0"
 #define MyPublisher "ProstoKVN"
-#define BuildDir "..\dist\ProstoKVN-v0.29.2-win-x64"
+#define BuildDir "..\dist\ProstoKVN-v0.30.0-win-x64"
 
 [Setup]
 AppId={{F78C462D-7275-4E6B-8C27-77E01D8DBB58}

@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
@@ -13,6 +16,18 @@ public static class DesignUiTests
     {
         if (!value) throw new Exception("DESIGN_UI_FAIL: " + reason);
         Console.WriteLine("PASS " + reason);
+    }
+
+    private static IEnumerable<T> VisualChildren<T>(DependencyObject element)
+        where T : DependencyObject
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(element); i++)
+        {
+            var child = VisualTreeHelper.GetChild(element, i);
+            if (child is T typed) yield return typed;
+            foreach (var nested in VisualChildren<T>(child))
+                yield return nested;
+        }
     }
 
     private static void SavePreview(Window window, string path)
@@ -110,8 +125,77 @@ public static class DesignUiTests
                 var probe = (Expander)window.FindName("ProbeSection");
                 Require(!addRule.IsExpanded && ruleGroups.IsExpanded && !probe.IsExpanded,
                     "Routes page opens with compact forms and visible service list");
-                Require(((ListBox)window.FindName("RulesList")).IsVisible,
+                var rulesList = (ListBox)window.FindName("RulesList");
+                Require(rulesList.IsVisible,
                     "Existing rule editor accessible on Routes tab");
+                var groups = VisualChildren<Expander>(ruleGroups)
+                    .Where(x => x.DataContext is System.Windows.Data.CollectionViewGroup).ToList();
+                Require(groups.Count > 0, "Grouped rules have expandable service panels");
+                groups[0].IsExpanded = true;
+                window.UpdateLayout();
+                var ruleRow = VisualChildren<ListBoxItem>(ruleGroups)
+                    .FirstOrDefault(x => x.DataContext is RouteRule);
+                Require(ruleRow != null, "Rule list renders selectable rows");
+                ruleRow!.ApplyTemplate();
+                var marker = (Border)ruleRow.Template.FindName("RuleSelectedMarker", ruleRow);
+                var frame = (Border)ruleRow.Template.FindName("RuleRowFrame", ruleRow);
+                Require(marker != null && frame != null,
+                    "Rule highlight includes accent marker and frame");
+                rulesList.SelectedItem = null;
+                ruleRow.IsSelected = false;
+                window.UpdateLayout();
+                var before = (frame!.Background as SolidColorBrush)?.Color;
+                var otherRow = VisualChildren<ListBoxItem>(ruleGroups)
+                    .FirstOrDefault(x => x.DataContext is RouteRule && !ReferenceEquals(x, ruleRow));
+                Require(otherRow != null, "Multiple rule rows available to test right-click targeting");
+                var otherRule = (RouteRule)otherRow!.DataContext;
+                rulesList.SelectedItem = otherRule;
+                window.UpdateLayout();
+                var rightClick = window.GetType().GetMethod("RuleItem_RightButtonDown",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                Require(rightClick != null, "Right-click handler is connected");
+                rightClick!.Invoke(window, new object?[] { ruleRow, null });
+                window.UpdateLayout();
+                Require(ReferenceEquals(rulesList.SelectedItem, ruleRow.DataContext),
+                    "Right-click selects the clicked rule");
+                Require(marker!.Visibility == Visibility.Visible,
+                    "Selected rule has a visible accent stripe");
+                Require(frame.Background is SolidColorBrush selectedBackground
+                    && selectedBackground.Color != before,
+                    "Selected rule background contrasts with ordinary rows");
+                Require(((TextBlock)window.FindName("SelectedRuleHint")).Text.Contains(
+                    ((RouteRule)ruleRow.DataContext).Domain),
+                    "Selection summary identifies the clicked rule");
+                Require(((Button)window.FindName("RemoveRuleButton")).IsEnabled,
+                    "Delete action is available only when a rule is selected");
+                Require(ruleRow.ContextMenu != null
+                    && ruleRow.ContextMenu.Items.OfType<MenuItem>().Any(m =>
+                        m.Header?.ToString() == "Удалить правило"),
+                    "Right-click opens a context menu with delete action");
+                if (!string.IsNullOrWhiteSpace(preview))
+                    SavePreview(window, Path.ChangeExtension(preview, ".selected.routes.png"));
+                var selectedRule = (RouteRule)ruleRow.DataContext;
+                var deleteItem = ruleRow.ContextMenu!.Items.OfType<MenuItem>()
+                    .First(m => m.Header?.ToString() == "Удалить правило");
+                var confirmField = window.GetType().GetField("confirmDeleteOverride",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                Require(confirmField != null, "Delete confirmation is testable without live settings");
+                confirmField!.SetValue(window, new Func<RouteRule, bool>(_ => false));
+                deleteItem.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                Require(rulesList.Items.Contains(selectedRule),
+                    "Cancelling context-menu delete keeps the selected rule");
+                confirmField.SetValue(window, new Func<RouteRule, bool>(_ => true));
+                deleteItem.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                window.UpdateLayout();
+                Require(!rulesList.Items.Contains(selectedRule)
+                    && !UserStore.LoadRules().Any(r => r.Domain == selectedRule.Domain),
+                    "Confirmed context-menu delete persists removal in isolated profile");
+                Require(UserStore.LoadRules().Any(r => r.Domain == otherRule.Domain),
+                    "Deleting the right-clicked rule keeps the previously selected rule");
+                Require(!((Button)window.FindName("RemoveRuleButton")).IsEnabled,
+                    "Delete action disables after the selected rule is removed");
+                groups[0].IsExpanded = false;
+                window.UpdateLayout();
                 double collapsedRuleHeight = addRule.ActualHeight;
                 addRule.IsExpanded = true;
                 window.UpdateLayout();
