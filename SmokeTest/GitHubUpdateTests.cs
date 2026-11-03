@@ -99,8 +99,8 @@ public static class GitHubUpdateTests
             if (!string.IsNullOrWhiteSpace(real) && File.Exists(real))
             {
                 string checksum = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(real)));
-                var prod = new GitHubUpdate(new Version(0,29,0), "v0.29.0",
-                    "https://github.com/GRESHNIK2019/ProstoKVN/releases/download/v0.29.0/ProstoKVN-v0.29.1-win-x64.zip",
+                var prod = new GitHubUpdate(new Version(0,29,2), "v0.29.2",
+                    "https://github.com/GRESHNIK2019/ProstoKVN/releases/download/v0.29.2/ProstoKVN-v0.29.2-win-x64.zip",
                     checksum, new FileInfo(real).Length, "");
                 GitHubUpdateService.TestDownload = (_, dest, _, _) =>
                 {

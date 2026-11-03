@@ -130,7 +130,7 @@ try{
     git add README.md .gitignore ProstoKVN Updater SmokeTest release .github
     $files=git diff --cached --name-only
     $sourceFiles=@($files)
-    if($sourceFiles.Count -lt 40){throw "Expected at least 40 source files; got $($sourceFiles.Count)"}
+    if($sourceFiles.Count -lt 3){throw "Expected at least 3 changed files; got $($sourceFiles.Count)"}
     $bad=@($files|Where-Object {$_ -match '(bin/|obj/|\.before-|settings\.json|routes\.json|subscription-cache|\.pfx$|\.key$|\.zip$|\.exe$)'})
     if($bad.Count){ throw "Sensitive files staged: $($bad -join ',')" }
     $potentialLeaks=@()

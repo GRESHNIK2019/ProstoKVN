@@ -39,6 +39,8 @@ public static class DesignUiTests
                 UserStore.EnsureHome();
                 var settings = new AppSettings {
                     Mode = "smart", Tun = true, SelectedNode = "Test Germany",
+                    Theme = Environment.GetEnvironmentVariable("PROSTOKVN_PREVIEW_THEME") == "dark"
+                        ? "dark" : "light",
                     ProtectedUrl = UserStore.EncryptUrl("https://example.org/sub/test")
                 };
                 UserStore.SaveSettings(settings);
@@ -84,16 +86,73 @@ public static class DesignUiTests
 
                 tabs.SelectedIndex = 2;
                 window.UpdateLayout();
+                var subscription = (Expander)window.FindName("SubscriptionSection");
+                var routing = (Expander)window.FindName("RoutingSection");
+                var updates = (Expander)window.FindName("UpdateSection");
+                Require(!subscription.IsExpanded && routing.IsExpanded && !updates.IsExpanded,
+                    "Settings use compact sections by default");
                 Require(((ComboBox)window.FindName("ModeBox")).IsVisible,
-                    "Network and subscription controls available on Settings tab");
+                    "Network routing settings remain available");
+                double collapsedSettingsHeight = subscription.ActualHeight;
+                subscription.IsExpanded = true;
+                window.UpdateLayout();
+                Require(subscription.ActualHeight > collapsedSettingsHeight + 50
+                    && ((TextBox)window.FindName("SubscriptionBox")).IsVisible,
+                    "Subscription section expands and preserves input fields");
+                subscription.IsExpanded = false;
+                window.UpdateLayout();
                 if (!string.IsNullOrWhiteSpace(preview))
                     SavePreview(window, Path.ChangeExtension(preview, ".settings.png"));
                 tabs.SelectedIndex = 1;
                 window.UpdateLayout();
+                var addRule = (Expander)window.FindName("AddRuleSection");
+                var ruleGroups = (Expander)window.FindName("RuleGroupsSection");
+                var probe = (Expander)window.FindName("ProbeSection");
+                Require(!addRule.IsExpanded && ruleGroups.IsExpanded && !probe.IsExpanded,
+                    "Routes page opens with compact forms and visible service list");
                 Require(((ListBox)window.FindName("RulesList")).IsVisible,
                     "Existing rule editor accessible on Routes tab");
+                double collapsedRuleHeight = addRule.ActualHeight;
+                addRule.IsExpanded = true;
+                window.UpdateLayout();
+                Require(addRule.ActualHeight > collapsedRuleHeight + 50
+                    && ((TextBox)window.FindName("DomainBox")).IsVisible,
+                    "Add rule section expands without losing the editor");
+                addRule.IsExpanded = false;
+                window.UpdateLayout();
+                Require(addRule.ActualHeight <= collapsedRuleHeight + 4,
+                    "Collapsed add-rule panel returns to compact height");
                 if (!string.IsNullOrWhiteSpace(preview))
                     SavePreview(window, Path.ChangeExtension(preview, ".routes.png"));
+                tabs.SelectedIndex = 3;
+                window.UpdateLayout();
+                var log = (Expander)window.FindName("LogSection");
+                var logHelp = (Expander)window.FindName("LogHelpSection");
+                Require(log.IsExpanded && !logHelp.IsExpanded && ((TextBox)window.FindName("LogBox")).IsVisible,
+                    "Journal has a compact collapsible help section and visible log");
+                log.IsExpanded = false;
+                window.UpdateLayout();
+                Require(!((TextBox)window.FindName("LogBox")).IsVisible,
+                    "Journal content hides when section is collapsed");
+                log.IsExpanded = true;
+                window.UpdateLayout();
+                if (!string.IsNullOrWhiteSpace(preview))
+                    SavePreview(window, Path.ChangeExtension(preview, ".journal.png"));
+                window.Width = 750;
+                window.Height = 485;
+                tabs.SelectedIndex = 2;
+                window.UpdateLayout();
+                Require(window.ActualWidth >= 749 && subscription.ActualHeight < 60
+                    && updates.ActualHeight < 60,
+                    "Compact settings remain usable at 750x485 minimum window");
+                if (!string.IsNullOrWhiteSpace(preview))
+                    SavePreview(window, Path.ChangeExtension(preview, ".small.settings.png"));
+                tabs.SelectedIndex = 1;
+                window.UpdateLayout();
+                Require(addRule.ActualHeight < 60 && probe.ActualHeight < 60,
+                    "Collapsed route forms stay compact at minimum window size");
+                if (!string.IsNullOrWhiteSpace(preview))
+                    SavePreview(window, Path.ChangeExtension(preview, ".small.routes.png"));
                 window.Close();
                 Console.WriteLine("ALL_DESIGN_UI_TESTS_PASS");
             }
