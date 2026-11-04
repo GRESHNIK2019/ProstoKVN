@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
@@ -152,7 +152,7 @@ public static class GitHubUpdateService
             // Hash every payload file separately to detect any changes between staging and installation.
             var hashes = Directory.GetFiles(payload, "*", SearchOption.AllDirectories)
                 .ToDictionary(p => Path.GetRelativePath(payload, p).Replace('\\', '/'),
-                    p => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(p))),
+                    p => HashFile(p),
                     StringComparer.OrdinalIgnoreCase);
             File.WriteAllText(Path.Combine(dir, "hashes.json"), JsonSerializer.Serialize(hashes));
             return dir;
@@ -163,6 +163,48 @@ public static class GitHubUpdateService
             Directory.Delete(dir, true);
             throw;
         }
+    }
+
+    private static string HashFile(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream));
+    }
+
+    /// <summary>
+    /// Remove only completed update stages older than one day, or abandoned
+    /// stages older than two weeks. Never touch an active update or other data.
+    /// </summary>
+    public static void CleanupOldStages()
+    {
+        string parent = Path.Combine(UserStore.Home, "updates");
+        if (!Directory.Exists(parent)) return;
+        try
+        {
+            foreach (string path in Directory.EnumerateDirectories(parent, "stage-*")
+                         .OrderBy(x => x).Take(10))
+            {
+                try
+                {
+                    var dir = new DirectoryInfo(path);
+                    if ((dir.Attributes & FileAttributes.ReparsePoint) != 0
+                        || !Regex.IsMatch(dir.Name, @"^stage-[a-fA-F0-9]{32}$"))
+                        continue;
+                    string log = Path.Combine(path, "update-result.log");
+                    DateTime created = dir.CreationTimeUtc;
+                    DateTime now = DateTime.UtcNow;
+                    if (created > now || now - created < TimeSpan.FromDays(1)) continue;
+                    bool completed = File.Exists(log)
+                        && new FileInfo(log).Length < 64_000
+                        && File.ReadAllText(log).Contains("Updated ProstoKVN started.",
+                            StringComparison.Ordinal);
+                    if (completed || now - created > TimeSpan.FromDays(14))
+                        dir.Delete(recursive: true);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
     private static async Task DownloadAsync(string url, string destination,

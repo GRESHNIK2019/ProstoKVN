@@ -31,7 +31,6 @@ public sealed class VpnCore : IDisposable
     private static bool WantsXray(ProxyNode? node) => node?.NativeXrayConfig != null && node.Values.ContainsKey("reality-opts");
     private readonly HttpClient api = new() { Timeout = TimeSpan.FromSeconds(7) };
     private bool proxyChanged;
-    private object? oldEnable, oldServer, oldOverride;
     public bool IsRunning => process is { HasExited: false };
     public bool IsTransportHealthy => IsRunning
         && (activeEngine != TunnelEngine.Xray || xray.IsRunning)
@@ -42,8 +41,7 @@ public sealed class VpnCore : IDisposable
         get
         {
             string local = Path.Combine(AppContext.BaseDirectory, "core", "mihomo.exe");
-            if (File.Exists(local)) return local;
-            return Path.Combine("D:\\VEGACRMP_DEV\\tools\\vega_vpn_client", "core", "mihomo.exe");
+            return local;
         }
     }
     public static bool IsAdmin()
@@ -281,45 +279,22 @@ public sealed class VpnCore : IDisposable
     }
     private void EnableSystemProxy()
     {
-        using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Internet Settings", writable: true);
-        if (key == null) throw new InvalidOperationException("Не удалось открыть настройки системного прокси.");
-        oldEnable = key.GetValue("ProxyEnable");
-        oldServer = key.GetValue("ProxyServer");
-        oldOverride = key.GetValue("ProxyOverride");
+        SystemProxyRecovery.Enable(MainPort);
         proxyChanged = true;
-        key.SetValue("ProxyServer", $"127.0.0.1:{MainPort}", RegistryValueKind.String);
-        key.SetValue("ProxyOverride", "localhost;127.*;10.*;192.168.*;<local>", RegistryValueKind.String);
-        key.SetValue("ProxyEnable", 1, RegistryValueKind.DWord);
-        NotifyInternetSettings();
     }
     private void RestoreSystemProxy()
     {
         if (!proxyChanged) return;
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Internet Settings", writable: true);
-            if (key != null)
-            {
-                RestoreValue(key, "ProxyEnable", oldEnable, RegistryValueKind.DWord);
-                RestoreValue(key, "ProxyServer", oldServer, RegistryValueKind.String);
-                RestoreValue(key, "ProxyOverride", oldOverride, RegistryValueKind.String);
-                NotifyInternetSettings();
-            }
+            SystemProxyRecovery.RestoreIfOwned(MainPort);
+            proxyChanged = false;
         }
-        catch { }
-        proxyChanged = false;
-    }
-    private static void RestoreValue(RegistryKey key, string name, object? oldValue, RegistryValueKind kind)
-    {
-        if (oldValue == null) key.DeleteValue(name, false);
-        else key.SetValue(name, oldValue, kind);
-    }
-    [System.Runtime.InteropServices.DllImport("wininet.dll", SetLastError = true)]
-    private static extern bool InternetSetOption(IntPtr hInternet, int option, IntPtr buffer, int length);
-    private static void NotifyInternetSettings()
-    {
-        InternetSetOption(IntPtr.Zero, 39, IntPtr.Zero, 0);
-        InternetSetOption(IntPtr.Zero, 37, IntPtr.Zero, 0);
+        catch (Exception ex)
+        {
+            // Preserve recovery state for the next start instead of discarding it.
+            OnLog?.Invoke("Не удалось восстановить системный прокси: " + ex.GetType().Name);
+        }
     }
     public static bool IsDiagnosticConnection(string? rule, string? payload) =>
         rule == "InName"

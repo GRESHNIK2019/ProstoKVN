@@ -27,6 +27,9 @@ public partial class MainWindow : Window
         Interval = TimeSpan.FromSeconds(8)
     };
     private readonly System.Threading.SemaphoreSlim reloadGate = new(1, 1);
+    private readonly System.Threading.SemaphoreSlim connectionGate = new(1, 1);
+    private bool shutdownFinalized;
+    private int consecutiveFailedVpnChecks;
     private bool pendingLearnedRules;
     private bool learnedReloadBusy;
     private AppSettings settings = new();
@@ -138,15 +141,31 @@ public partial class MainWindow : Window
         learnTimer.Start();
         monitorTimer.Tick += async (_, _) => await MonitorTickAsync();
         monitorTimer.Start();
-        Closing += (_, _) =>
+        Closing += async (_, args) =>
         {
+            if (shutdownFinalized) return;
+            // Delay closing until an in-flight StartAsync releases the gate,
+            // otherwise the core can turn the system proxy back on after exit.
+            args.Cancel = true;
             isWindowClosing = true;
             recovery.Disable();
+            ++connectionRevision;
             monitorTimer.Stop();
             learnTimer.Stop();
             learnedRulesBatchTimer.Stop();
-            learner.Dispose();
-            core.Dispose();
+            await connectionGate.WaitAsync();
+            try
+            {
+                learner.Dispose();
+                core.Dispose();
+            }
+            finally
+            {
+                shutdownFinalized = true;
+                connectionGate.Release();
+                // Never call Close recursively from the current Closing event.
+                _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(Close));
+            }
         };
         if (retiredTrials > 0) AppendLog($"Удалено {retiredTrials} неподтверждённых пробных AUTO-правил; прежние правила сохранены в резервной копии.");
         AppendLog("ProstoKVN открыт. Для TUN нужны права администратора.");
@@ -495,36 +514,57 @@ public partial class MainWindow : Window
             int failures = 0;
             bool staleEdit = false;
             var snapshot = profiles.ToArray();
-            foreach (var profile in snapshot)
+            ImportSummary.Text = $"Обновляю подписки: {snapshot.Length} источников...";
+            // Fetch at most three subscriptions concurrently; apply UI/data
+            // changes strictly in profile order after all requests finish.
+            using var limiter = new System.Threading.SemaphoreSlim(3, 3);
+            var loads = snapshot.Select(async profile =>
             {
-                if (isWindowClosing) return;
                 string url = profile.Url;
-                if (!SubscriptionImporter.IsValidUrl(url)) continue;
+                if (!SubscriptionImporter.IsValidUrl(url))
+                    return (Profile: profile, Url: url,
+                        Result: (SubscriptionImporter.Result?)null, Error: (Exception?)null);
+                await limiter.WaitAsync();
                 try
                 {
-                    // The injectable loader is retained for offline startup tests.
-                    var result = startup && profile.Format == "auto"
+                    var imported = startup && profile.Format == "auto"
                         ? await StartupSubscriptionLoader(url)
                         : await SubscriptionImporter.LoadAsync(url, profile.Format);
-                    if (isWindowClosing) return;
-                    if (!profiles.Contains(profile) || profile.Url != url) continue;
-                    // Don't overwrite an in-progress edit for the currently selected URL.
-                    if (startup && ReferenceEquals(SubscriptionList.SelectedItem, profile)
-                        && SubscriptionBox.Text.Trim() != url)
-                    {
-                        staleEdit = true;
-                        ImportSummary.Text = "Ссылка изменена";
-                        AppendLog("Устаревший ответ подписки пропущен.");
-                        continue;
-                    }
-                    StoreImportedProfile(profile, result, persist: true, select: false);
-                    AppendLog($"Обновлена подписка «{profile.Name}»: {result.Nodes.Count} серверов.");
+                    return (Profile: profile, Url: url,
+                        Result: (SubscriptionImporter.Result?)imported, Error: (Exception?)null);
                 }
                 catch (Exception ex)
                 {
-                    failures++;
-                    AppendLog($"Не удалось обновить «{profile.Name}»: {ex.GetType().Name}.");
+                    return (Profile: profile, Url: url,
+                        Result: (SubscriptionImporter.Result?)null, Error: (Exception?)ex);
                 }
+                finally { limiter.Release(); }
+            }).ToArray();
+            var responses = await Task.WhenAll(loads);
+            foreach (var response in responses)
+            {
+                if (isWindowClosing) return;
+                var profile = response.Profile;
+                string url = response.Url;
+                if (response.Error != null)
+                {
+                    failures++;
+                    AppendLog($"Не удалось обновить «{profile.Name}»: {response.Error.GetType().Name}.");
+                    continue;
+                }
+                if (response.Result == null || !profiles.Contains(profile) || profile.Url != url)
+                    continue;
+                // Do not overwrite an edit made while the requests were in flight.
+                if (startup && ReferenceEquals(SubscriptionList.SelectedItem, profile)
+                    && SubscriptionBox.Text.Trim() != url)
+                {
+                    staleEdit = true;
+                    ImportSummary.Text = "Ссылка изменена";
+                    AppendLog("Устаревший ответ подписки пропущен.");
+                    continue;
+                }
+                StoreImportedProfile(profile, response.Result, persist: true, select: false);
+                AppendLog($"Обновлена подписка «{profile.Name}»: {response.Result.Nodes.Count} серверов.");
             }
             RebuildServerList();
             if (!staleEdit)
@@ -617,6 +657,29 @@ public partial class MainWindow : Window
     private async void Refresh_Click(object sender, RoutedEventArgs e)
         => await RefreshAllSubscriptionsAsync();
 
+    /// <summary>
+    /// Serialize connection transitions and abandon stale requests after a
+    /// server change, manual disconnect, or application shutdown.
+    /// </summary>
+    private async Task<bool> StartCoreForRevisionAsync(int revision)
+    {
+        if (isWindowClosing) return false;
+        await connectionGate.WaitAsync();
+        try
+        {
+            if (isWindowClosing || !recovery.Desired || revision != connectionRevision)
+                return false;
+            await core.StartAsync(nodes, rules, settings);
+            if (isWindowClosing || !recovery.Desired || revision != connectionRevision)
+            {
+                core.Stop();
+                return false;
+            }
+            return true;
+        }
+        finally { connectionGate.Release(); }
+    }
+
     private async void Connect_Click(object sender, RoutedEventArgs e)
     {
         ConnectButton.IsEnabled = false;
@@ -636,9 +699,10 @@ public partial class MainWindow : Window
                 await RefreshAllSubscriptionsAsync();
             if (nodes.Count == 0) return;
             recovery.Enable();
-            ++connectionRevision;
+            int revision = ++connectionRevision;
             vpnExitVerified = false;
-            await core.StartAsync(nodes, rules, settings);
+            consecutiveFailedVpnChecks = 0;
+            if (!await StartCoreForRevisionAsync(revision)) return;
             meter.Reset();
             recovery.Healthy();
             RecoveryText.Text = "Соединение под наблюдением";
@@ -653,12 +717,16 @@ public partial class MainWindow : Window
         }
         finally { ConnectButton.IsEnabled = true; }
     }
-    private void Disconnect_Click(object sender, RoutedEventArgs e)
+    private async void Disconnect_Click(object sender, RoutedEventArgs e)
     {
         ++connectionRevision;
         vpnExitVerified = false;
+        consecutiveFailedVpnChecks = 0;
         recovery.Disable();
-        core.Stop();
+        await connectionGate.WaitAsync();
+        try { core.Stop(); }
+        finally { connectionGate.Release(); }
+        if (isWindowClosing) return;
         meter.Reset();
         RecoveryText.Text = "Автовосстановление отключено вручную";
         LatencyText.Text = "HTTPS-задержка: нет данных";
@@ -693,9 +761,10 @@ public partial class MainWindow : Window
         try
         {
             ConnectButton.IsEnabled = false;
-            ++connectionRevision;
+            int revision = ++connectionRevision;
             vpnExitVerified = false;
-            await core.StartAsync(nodes, rules, settings);
+            consecutiveFailedVpnChecks = 0;
+            if (!await StartCoreForRevisionAsync(revision)) return;
             learner.ResetExitCountries();
             await VerifyConnectedAsync();
             AppendLog("Сервер переключён: " + settings.SelectedNode);
@@ -726,6 +795,8 @@ public partial class MainWindow : Window
                 return;
 
             vpnExitVerified = verification.Verified;
+            consecutiveFailedVpnChecks = verification.Verified
+                ? 0 : Math.Min(10, consecutiveFailedVpnChecks + 1);
             StatusLabel.Text = verification.Verified
                 ? "Подключено • VPN-выход подтверждён."
                 : "Соединение запущено • VPN-выход не подтверждён.";
@@ -740,6 +811,7 @@ public partial class MainWindow : Window
             if (revision != connectionRevision || !core.IsRunning || !recovery.Desired)
                 return;
             vpnExitVerified = false;
+            consecutiveFailedVpnChecks = Math.Min(10, consecutiveFailedVpnChecks + 1);
             StatusLabel.Text = "Соединение запущено • проверка VPN-выхода недоступна.";
             StatusLabel.Foreground = System.Windows.Media.Brushes.Orange;
             RecoveryText.Text = ConnectionStatusPolicy.MonitorText(false);
@@ -789,9 +861,16 @@ public partial class MainWindow : Window
         await reloadGate.WaitAsync();
         try
         {
-            if (core.IsRunning) await core.ReloadRoutesAsync(nodes, rules, settings);
+            if (isWindowClosing) return;
+            await connectionGate.WaitAsync();
+            try
+            {
+                if (!isWindowClosing && core.IsRunning)
+                    await core.ReloadRoutesAsync(nodes, rules, settings);
+            }
+            finally { connectionGate.Release(); }
         }
-        catch (Exception ex) { AppendLog("Не удалось применить правила: " + ex.Message); }
+        catch (Exception ex) { if (!isWindowClosing) AppendLog("Не удалось применить правила: " + ex.Message); }
         finally { reloadGate.Release(); }
     }
     private static string ServiceGroupKey(object? data)
@@ -1083,9 +1162,10 @@ public partial class MainWindow : Window
                     AppendLog(RecoveryText.Text);
                     try
                     {
-                        ++connectionRevision;
+                        int revision = ++connectionRevision;
                         vpnExitVerified = false;
-                        await core.StartAsync(nodes, rules, settings);
+                        consecutiveFailedVpnChecks = 0;
+                        if (!await StartCoreForRevisionAsync(revision)) return;
                         meter.Reset();
                         RecoveryText.Text = "Ядра восстановлены, проверяю соединение";
                         await VerifyConnectedAsync();
@@ -1118,7 +1198,8 @@ public partial class MainWindow : Window
                     return;
                 UpdateUdp(snapshot);
             }
-            recovery.ObserveHealthy(DateTime.UtcNow);
+            if (vpnExitVerified || settings.Mode == "direct")
+                recovery.ObserveHealthy(DateTime.UtcNow);
             // If the first verification ran before the VPN dial completed,
             // retry while local cores stay up. No disconnect or engine restart.
             if (ConnectionStatusPolicy.ShouldRetry(recovery.Desired,
@@ -1127,6 +1208,29 @@ public partial class MainWindow : Window
                 await VerifyConnectedAsync();
             if (monitorRevision != connectionRevision || !recovery.Desired || !core.IsRunning)
                 return;
+            // Never restart on a single failed IP service. Only after three
+            // consecutive complete checks, and with the existing bounded backoff.
+            if (settings.Mode != "direct" && consecutiveFailedVpnChecks >= 3
+                && recovery.ShouldRecover(false, DateTime.UtcNow))
+            {
+                recovery.Failed(DateTime.UtcNow);
+                RecoveryText.Text = $"VPN-выход не отвечает, переподключаю ({recovery.Attempts}/5)";
+                AppendLog(RecoveryText.Text);
+                int revision = ++connectionRevision;
+                consecutiveFailedVpnChecks = 0;
+                vpnExitVerified = false;
+                try
+                {
+                    if (!await StartCoreForRevisionAsync(revision)) return;
+                    meter.Reset();
+                    await VerifyConnectedAsync();
+                }
+                catch (Exception ex)
+                {
+                    AppendLog("Автовосстановление VPN: " + ex.GetType().Name);
+                }
+                return;
+            }
             RecoveryText.Text = ConnectionStatusPolicy.MonitorText(vpnExitVerified,
                 settings.Mode == "direct");
         }

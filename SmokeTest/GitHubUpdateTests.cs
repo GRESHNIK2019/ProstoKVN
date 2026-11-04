@@ -110,7 +110,8 @@ public static class GitHubUpdateTests
                 string prodStage = await GitHubUpdateService.StageAsync(prod);
                 Assert(File.Exists(Path.Combine(prodStage, "payload", "ProstoKVN.exe"))
                     && File.Exists(Path.Combine(prodStage, "payload", "updater", "ProstoKVN.Updater.exe"))
-                    && File.Exists(Path.Combine(prodStage, "payload", "updater", "ProstoKVN.Updater.runtimeconfig.json"))
+                    && (File.Exists(Path.Combine(prodStage, "payload", "updater", "ProstoKVN.Updater.runtimeconfig.json"))
+                        || !File.Exists(Path.Combine(prodStage, "payload", "updater", "ProstoKVN.Updater.dll")))
                     && File.Exists(Path.Combine(prodStage, "payload", "YamlDotNet.dll"))
                     && File.Exists(Path.Combine(prodStage, "payload", "licenses", "YamlDotNet-MIT.txt")),
                     "Real release archive securely stages updater, YAML parser and license");

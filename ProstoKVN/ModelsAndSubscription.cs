@@ -103,16 +103,53 @@ public static class UserStore
     public static string ConfigPath => Path.Combine(Home, "config.yaml");
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true, PropertyNameCaseInsensitive = true };
     public static void EnsureHome() => Directory.CreateDirectory(Home);
-    public static List<RouteRule> LoadRules()
+    private static T? ReadWithBackup<T>(string file)
     {
-        try { return JsonSerializer.Deserialize<List<RouteRule>>(File.ReadAllText(Path.Combine(Home, "routes.json")), JsonOptions) ?? new(); }
-        catch { return new(); }
+        foreach (string candidate in new[] { file, file + ".bak" })
+        {
+            try
+            {
+                if (!File.Exists(candidate) || new FileInfo(candidate).Length > 8_000_000) continue;
+                var value = JsonSerializer.Deserialize<T>(File.ReadAllText(candidate), JsonOptions);
+                if (value != null) return value;
+            }
+            catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) { }
+        }
+        return default;
     }
-    public static void SaveRules(IEnumerable<RouteRule> rules)
+
+    private static void WriteAtomic(string file, string json)
     {
         EnsureHome();
-        File.WriteAllText(Path.Combine(Home, "routes.json"), JsonSerializer.Serialize(rules.ToList(), JsonOptions));
+        string temp = file + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.WriteAllText(temp, json, Encoding.UTF8);
+            if (File.Exists(file))
+            {
+                // Keep the most recent valid snapshot and avoid copying corrupted JSON.
+                try
+                {
+                    using var check = JsonDocument.Parse(File.ReadAllText(file));
+                    File.Copy(file, file + ".bak", overwrite: true);
+                }
+                catch (JsonException) { }
+            }
+            File.Move(temp, file, overwrite: true);
+            if (!File.Exists(file + ".bak"))
+            {
+                try { File.Copy(file, file + ".bak", overwrite: false); }
+                catch (IOException) { /* The primary file was safely committed. */ }
+            }
+        }
+        finally { if (File.Exists(temp)) File.Delete(temp); }
     }
+    public static List<RouteRule> LoadRules()
+        => ReadWithBackup<List<RouteRule>>(Path.Combine(Home, "routes.json")) ?? new();
+
+    public static void SaveRules(IEnumerable<RouteRule> rules)
+        => WriteAtomic(Path.Combine(Home, "routes.json"),
+            JsonSerializer.Serialize(rules.ToList(), JsonOptions));
     // Keep an untouched copy before removing previously mislearned .ru rules.
     // This operation never deletes the source file or overwrites old backups.
     public static string BackupRoutesBeforeRuCleanup()
@@ -143,15 +180,11 @@ public static class UserStore
         return expired;
     }
     public static AppSettings LoadSettings()
-    {
-        try { return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(Path.Combine(Home, "settings.json")), JsonOptions) ?? new(); }
-        catch { return new(); }
-    }
+        => ReadWithBackup<AppSettings>(Path.Combine(Home, "settings.json")) ?? new();
+
     public static void SaveSettings(AppSettings settings)
-    {
-        EnsureHome();
-        File.WriteAllText(Path.Combine(Home, "settings.json"), JsonSerializer.Serialize(settings, JsonOptions));
-    }
+        => WriteAtomic(Path.Combine(Home, "settings.json"),
+            JsonSerializer.Serialize(settings, JsonOptions));
     public static string EncryptUrl(string url)
     {
         if (string.IsNullOrWhiteSpace(url)) return "";

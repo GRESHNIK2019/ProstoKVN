@@ -4,6 +4,11 @@ using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using ProstoKVN;
+if (Environment.GetEnvironmentVariable("PROSTOKVN_RELIABILITY_TEST") == "1")
+{
+    ReliabilityTests.Run();
+    return;
+}
 if (Environment.GetEnvironmentVariable("PROSTOKVN_MULTI_SUB_UI_TEST") == "1")
 {
     MultiSubscriptionUiTests.Run();

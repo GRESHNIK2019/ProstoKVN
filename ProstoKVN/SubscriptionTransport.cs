@@ -1,7 +1,9 @@
-using System;
+﻿using System;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
+using System.IO;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace ProstoKVN;
@@ -12,6 +14,7 @@ namespace ProstoKVN;
 /// </summary>
 public static class SubscriptionTransport
 {
+    public const int MaxResponseBytes = 8 * 1024 * 1024;
     private static readonly HttpClient Direct = CreateDirect();
     private static readonly HttpClient ThroughVpn = CreateVpn();
     public static Func<bool, string, Task<string>>? TestFetch;
@@ -50,10 +53,23 @@ public static class SubscriptionTransport
     {
         if (TestFetch is { } callback) return await callback(vpn, url);
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.TryAddWithoutValidation("User-Agent", "ProstoKVN/0.28");
-        using var response = await (vpn ? ThroughVpn : Direct).SendAsync(request);
+        request.Headers.TryAddWithoutValidation("User-Agent", "ProstoKVN/0.30.2");
+        using var response = await (vpn ? ThroughVpn : Direct)
+            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadAsStringAsync();
+        if (response.Content.Headers.ContentLength > MaxResponseBytes)
+            throw new InvalidOperationException("Подписка слишком большая (более 8 МБ).");
+        using var source = await response.Content.ReadAsStreamAsync();
+        using var buffer = new MemoryStream();
+        byte[] block = new byte[32 * 1024];
+        int read;
+        while ((read = await source.ReadAsync(block)) > 0)
+        {
+            if (buffer.Length + read > MaxResponseBytes)
+                throw new InvalidOperationException("Подписка слишком большая (более 8 МБ).");
+            buffer.Write(block, 0, read);
+        }
+        return Encoding.UTF8.GetString(buffer.ToArray());
     }
 
     public static async Task<string> GetStringAsync(string url)

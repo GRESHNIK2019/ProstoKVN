@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$Version = '0.30.1',
+    [string]$Version = '0.30.2',
     [string]$SignTool = '',
     [string]$CertificateThumbprint = '',
     [switch]$AllowUnsignedDev
@@ -12,24 +12,57 @@ $archiveName = "ProstoKVN-$tag-win-x64.zip"
 $dist = Join-Path $root 'dist'
 $out = Join-Path $dist ("ProstoKVN-$tag-win-x64")
 $zip = Join-Path $dist $archiveName
-$old = Join-Path $dist 'ProstoKVN-v0.28-subscription-fix'
+$old = Join-Path $dist 'ProstoKVN-v0.30.1-win-x64'
 
 if (-not $AllowUnsignedDev -and (-not $SignTool -or -not $CertificateThumbprint)) {
     throw 'Для публичного релиза необходим Authenticode. Укажи -SignTool и -CertificateThumbprint. Для локальной проверки используй -AllowUnsignedDev.'
 }
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Format: major.minor.patch' }
-if (-not (Test-Path (Join-Path $old 'core'))) { throw 'Не найдены ядра, сначала собери базовую v0.28.' }
+if (-not (Test-Path (Join-Path $old 'core'))) { throw 'Не найдены компоненты ядра в предыдущем проверенном релизе.' }
 if (Test-Path $out) { throw "Папка релиза уже существует: $out (удаление автоматически запрещено)." }
 if (Test-Path $zip) { throw "Архив релиза уже существует: $zip" }
 New-Item -ItemType Directory -Path $out -Force | Out-Null
 Push-Location $root
 try {
-    dotnet publish '.\ProstoKVN\ProstoKVN.csproj' -c Release -r win-x64 --self-contained false -o $out --nologo -v minimal
+    dotnet publish '.\ProstoKVN\ProstoKVN.csproj' -c Release -r win-x64 --self-contained true -o $out --nologo -v minimal
     if ($LASTEXITCODE -ne 0) { throw 'Сборка клиента не удалась.' }
     $helper = Join-Path $out 'updater'
     New-Item -ItemType Directory -Path $helper -Force | Out-Null
-    dotnet publish '.\Updater\ProstoKVN.Updater.csproj' -c Release -r win-x64 --self-contained false -o $helper --nologo -v minimal
+    dotnet publish '.\Updater\ProstoKVN.Updater.csproj' -c Release -r win-x64 --self-contained true -o $helper --nologo -v minimal
     if ($LASTEXITCODE -ne 0) { throw 'Сборка обновлятора не удалась.' }
+    # GUI is self-contained WPF; updater is a compact standalone NativeAOT exe.
+    foreach ($required in @('ProstoKVN.exe', 'ProstoKVN.dll',
+        'ProstoKVN.runtimeconfig.json', 'coreclr.dll', 'hostfxr.dll',
+        'hostpolicy.dll', 'PresentationFramework.dll')) {
+        if (-not (Test-Path (Join-Path $out $required))) {
+            throw "Self-contained app is missing: $required"
+        }
+    }
+    $runtime = Get-Content (Join-Path $out 'ProstoKVN.runtimeconfig.json') -Raw | ConvertFrom-Json
+    if ($runtime.runtimeOptions.PSObject.Properties.Name -contains 'frameworks' -or
+        $runtime.runtimeOptions.PSObject.Properties.Name -contains 'framework') {
+        throw 'Framework-dependent app configuration detected'
+    }
+    $nativeHelper = Join-Path $helper 'ProstoKVN.Updater.exe'
+    if (-not (Test-Path $nativeHelper) -or (Get-Item $nativeHelper).Length -lt 500000) {
+        throw 'Native updater is missing or unexpectedly small'
+    }
+    if (Test-Path (Join-Path $helper 'coreclr.dll')) {
+        throw 'Updater unexpectedly includes a second .NET runtime'
+    }
+    # Symbols stay on the development machine rather than in the public ZIP.
+    $symbolDir = Join-Path $dist 'symbols'
+    foreach ($entry in @(
+        @{ Source = (Join-Path $out 'ProstoKVN.pdb'); Name = "ProstoKVN-$tag.pdb" },
+        @{ Source = (Join-Path $helper 'ProstoKVN.Updater.pdb'); Name = "ProstoKVN.Updater-$tag.pdb" }
+    )) {
+        if (Test-Path $entry.Source) {
+            New-Item -ItemType Directory -Path $symbolDir -Force | Out-Null
+            $symbolTarget = Join-Path $symbolDir $entry.Name
+            if (Test-Path $symbolTarget) { throw "Symbol backup already exists: $symbolTarget" }
+            Move-Item -LiteralPath $entry.Source -Destination $symbolTarget
+        }
+    }
     Copy-Item (Join-Path $old 'core') (Join-Path $out 'core') -Recurse
     Copy-Item (Join-Path $old 'licenses') (Join-Path $out 'licenses') -Recurse
     Copy-Item (Join-Path $root 'release\licenses\YamlDotNet-MIT.txt') (Join-Path $out 'licenses\YamlDotNet-MIT.txt')
@@ -50,7 +83,7 @@ try {
     $notes = @"
 ProstoKVN $tag — Windows x64
 Обновления: GitHub Releases + проверка SHA-256 + отдельный updater с резервной копией.
-Зависимость: Microsoft .NET Desktop Runtime 10.
+Среда .NET 10 включена в пакет: установка .NET пользователю не требуется.
 Не отключает проверку сертификатов, SmartScreen или Defender.
 "@
     Set-Content -Path (Join-Path $out 'RELEASE.txt') -Encoding UTF8 -Value $notes

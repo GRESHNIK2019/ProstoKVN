@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 
 namespace ProstoKVN;
@@ -22,7 +23,12 @@ public partial class App : Application
             Shutdown();
             return;
         }
+        // Recover a proxy left by a previous crash, but never overwrite a proxy
+        // subsequently configured by another application.
+        try { SystemProxyRecovery.RecoverIfStale(VpnCore.MainPort); }
+        catch (Exception) { /* Snapshot stays available for a later safe retry. */ }
         base.OnStartup(e);
+        _ = Task.Run(GitHubUpdateService.CleanupOldStages);
     }
 
     protected override void OnExit(ExitEventArgs e)

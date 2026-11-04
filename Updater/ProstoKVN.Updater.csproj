@@ -5,7 +5,9 @@
   <ImplicitUsings>enable</ImplicitUsings>
   <Nullable>enable</Nullable>
   <AssemblyName>ProstoKVN.Updater</AssemblyName>
-  <SelfContained>false</SelfContained>
+  <SelfContained>true</SelfContained>
   <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+  <PublishAot>true</PublishAot>
+  <StripSymbols>true</StripSymbols>
  </PropertyGroup>
 </Project>

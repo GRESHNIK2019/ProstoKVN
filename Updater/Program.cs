@@ -50,7 +50,8 @@ internal static class Program
             }
             catch (ArgumentException) { /* already exited */ }
 
-            var hashes = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(manifest))
+            var hashes = JsonSerializer.Deserialize(File.ReadAllText(manifest),
+                ManifestJsonContext.Default.DictionaryStringString)
                 ?? throw new InvalidOperationException("Update file manifest missing.");
             if (hashes.Count is < 3 or > 2500)
                 throw new InvalidOperationException("Unexpected update manifest length.");
