@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <!-- Ship the security-serviced runtime even when the local SDK bundles an older patch. -->
+    <RuntimeFrameworkVersion>10.0.15</RuntimeFrameworkVersion>
+  </PropertyGroup>
+</Project>

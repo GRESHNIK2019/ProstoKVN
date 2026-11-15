@@ -10,4 +10,10 @@
   <PublishAot>true</PublishAot>
   <StripSymbols>true</StripSymbols>
  </PropertyGroup>
+ <Target Name="UseServicedNativeAotCompiler" BeforeTargets="ProcessFrameworkReferences">
+  <ItemGroup>
+   <KnownILCompilerPack Update="Microsoft.DotNet.ILCompiler"
+                        ILCompilerPackVersion="$(RuntimeFrameworkVersion)" />
+  </ItemGroup>
+ </Target>
 </Project>
