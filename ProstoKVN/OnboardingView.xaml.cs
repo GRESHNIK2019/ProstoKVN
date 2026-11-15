@@ -50,8 +50,8 @@ public partial class OnboardingView : UserControl
     private void SetFeedback(string message, bool isError = false)
     {
         FeedbackText.Text = message;
-        FeedbackText.Foreground = isError ? Brushes.Orange
-            : new SolidColorBrush(Color.FromRgb(155, 191, 235));
+        FeedbackText.SetResourceReference(TextBlock.ForegroundProperty,
+            isError ? "ErrorText" : "ThemeFg62827C");
     }
 
     private void SetBusy(bool busy)
@@ -61,7 +61,7 @@ public partial class OnboardingView : UserControl
         PasteButton.IsEnabled = !busy;
         LaterButton.IsEnabled = !busy;
         LinkBox.IsEnabled = !busy;
-        SubmitButton.Content = busy ? "Загружаю серверы..." : "Проверить и добавить серверы";
+        SubmitButton.Content = busy ? "Загружаем серверы…" : "Добавить подписку";
     }
 
     private async void Submit_Click(object sender, RoutedEventArgs e)
@@ -70,7 +70,7 @@ public partial class OnboardingView : UserControl
         string url = SubscriptionUrl;
         if (!SubscriptionImporter.IsValidUrl(url))
         {
-            SetFeedback("Нужна корректная HTTPS-ссылка подписки.", true);
+            SetFeedback("Нужна корректная HTTPS-подписка или VLESS-ссылка.", true);
             LinkBox.Focus();
             return;
         }

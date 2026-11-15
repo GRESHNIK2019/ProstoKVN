@@ -23,6 +23,8 @@ public sealed class RouteRule
     public string Domain { get; set; } = "";
     // Optional user-defined name, e.g. Telegram, Hetzner, work subnet.
     public string Label { get; set; } = "";
+    [JsonIgnore]
+    public string DisplayTarget => RouteTarget.TryParse(Domain, out var target) ? target.DisplayValue : Domain;
     [System.Text.Json.Serialization.JsonIgnore]
     public string ServiceName => ServiceRuleGrouper.ServiceName(Domain);
     public string Route { get; set; } = "DIRECT";
@@ -32,11 +34,17 @@ public sealed class RouteRule
     public DateTime? ExpiresUtc { get; set; }
     public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
     public int FailedDirect { get; set; }
+    [JsonIgnore]
+    public string DisplaySummary => (Route == "VEGA" ? "Через VPN"
+        : Route == "REJECT" ? "Блокировать" : "Напрямую")
+        + (string.IsNullOrWhiteSpace(PreferredNode) ? "" : " · " + PreferredNode)
+        + " · " + (Manual ? "Добавлено вами" : "Автоматическое правило")
+        + (string.IsNullOrWhiteSpace(Label) ? "" : " · " + Label);
     public override string ToString()
     {
         string kind = RouteTarget.TryParse(Domain, out var target) ? target.DisplayKind : "Домен";
         string route = Route == "VEGA" ? "СЕРВЕР" : Route == "REJECT" ? "BLOCK" : Route;
-        string caption = string.IsNullOrWhiteSpace(Label) ? Domain : Label.Trim() + "  ·  " + Domain;
+        string caption = string.IsNullOrWhiteSpace(Label) ? DisplayTarget : Label.Trim() + "  ·  " + DisplayTarget;
         return $"{(Manual ? "✎ Ручное" : Provisional ? "◷ AUTO (предположительно)" : "◉ AUTO")}  [{kind}] {caption}   →   {route}{(string.IsNullOrEmpty(PreferredNode) ? "" : " через " + PreferredNode)}   ({UpdatedUtc.ToLocalTime():dd.MM HH:mm})";
     }
 }
@@ -294,6 +302,7 @@ public static class SubscriptionReader
                     n.Values["reality-opts"] = new Dictionary<string, object?> { ["public-key"] = Get(q, "pbk"), ["short-id"] = Get(q, "sid") };
                 SetTransport(n, Get(q, "type", "tcp"), Get(q, "path"), Get(q, "host"), Get(q, "serviceName"), Get(q, "mode"));
                 if (!string.IsNullOrEmpty(Get(q, "alpn"))) n.Values["alpn"] = Get(q, "alpn").Split(',');
+                n.NativeXrayConfig = VlessShareConfig.Build(u, q);
             }
             else if (scheme == "trojan")
             {

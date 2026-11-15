@@ -17,8 +17,13 @@ public static class SubscriptionImporter
 
     public static bool IsValidUrl(string input)
     {
-        return Uri.TryCreate(input?.Trim(), UriKind.Absolute, out var uri)
-            && uri.Scheme == Uri.UriSchemeHttps
+        if (string.IsNullOrWhiteSpace(input) || input.Length > 8192
+            || !Uri.TryCreate(input.Trim(), UriKind.Absolute, out var uri))
+            return false;
+        if (uri.Scheme.Equals("vless", StringComparison.OrdinalIgnoreCase))
+            return !string.IsNullOrWhiteSpace(uri.Host) && uri.Port is > 0 and <= 65535
+                && Guid.TryParse(Uri.UnescapeDataString(uri.UserInfo), out _);
+        return uri.Scheme == Uri.UriSchemeHttps
             && !string.IsNullOrWhiteSpace(uri.Host)
             && string.IsNullOrEmpty(uri.UserInfo)
             && string.IsNullOrEmpty(uri.Fragment);
@@ -42,7 +47,14 @@ public static class SubscriptionImporter
     {
         string url = rawUrl.Trim();
         if (!IsValidUrl(url))
-            throw new InvalidOperationException("Нужна корректная HTTPS-ссылка подписки.");
+            throw new InvalidOperationException("Нужна корректная HTTPS-подписка или VLESS-ссылка.");
+        if (url.StartsWith("vless://", StringComparison.OrdinalIgnoreCase))
+        {
+            var single = SubscriptionReader.ParseContent(url).Nodes;
+            if (single.Count != 1 || single[0].Values["type"]?.ToString() != "vless")
+                throw new InvalidOperationException("Некорректная VLESS-ссылка.");
+            return new(url, single, "1 сервер • VLESS", "VLESS");
+        }
         string[] endpoints = format == "auto" && Alternate3xEndpoint(url) is string alt
             ? new[] { url, alt } : new[] { url };
         var nodes = new List<ProxyNode>();

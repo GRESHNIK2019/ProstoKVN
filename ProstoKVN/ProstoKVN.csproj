@@ -8,15 +8,17 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
-    <Version>0.30.2</Version>
-    <AssemblyVersion>0.30.2.0</AssemblyVersion>
-    <FileVersion>0.30.2.0</FileVersion>
+    <Version>0.33.0</Version>
+    <AssemblyVersion>0.33.0.0</AssemblyVersion>
+    <FileVersion>0.33.0.0</FileVersion>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
+    <ApplicationIcon>Assets\ProstoKVN.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
+    <Resource Include="Assets\ProstoKVN.ico" />
   </ItemGroup>
 
 </Project>

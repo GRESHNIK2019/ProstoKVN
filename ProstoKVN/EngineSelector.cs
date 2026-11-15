@@ -14,6 +14,10 @@ public static class EngineSelector
         string type = Value(node, "type").ToLowerInvariant();
         string transport = Value(node, "network").ToLowerInvariant();
         bool reality = node.Values.ContainsKey("reality-opts");
+        // Direct VLESS links have an exact Xray outbound; use it instead
+        // of reconstructing Reality or XHTTP in a different engine.
+        if (type == "vless" && !string.IsNullOrWhiteSpace(node.NativeXrayConfig))
+            return TunnelEngine.Xray;
         // XHTTP and REALITY use the original Xray-core whenever full 3x-ui
         // outbound configuration is available; no lossy reconstruction.
         if ((transport == "xhttp" || reality) && !string.IsNullOrEmpty(node.NativeXrayConfig))

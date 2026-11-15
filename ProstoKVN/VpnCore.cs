@@ -28,7 +28,7 @@ public sealed class VpnCore : IDisposable
         xray.OnLog += line => OnLog?.Invoke(line);
         singBox.OnLog += line => OnLog?.Invoke(line);
     }
-    private static bool WantsXray(ProxyNode? node) => node?.NativeXrayConfig != null && node.Values.ContainsKey("reality-opts");
+    private static bool WantsXray(ProxyNode? node) => node != null && EngineSelector.Choose(node) == TunnelEngine.Xray;
     private readonly HttpClient api = new() { Timeout = TimeSpan.FromSeconds(7) };
     private bool proxyChanged;
     public bool IsRunning => process is { HasExited: false };
@@ -60,9 +60,7 @@ public sealed class VpnCore : IDisposable
     private static int RulePriority(string value)
     {
         if (!RouteTarget.TryParse(value, out var target)) return -1;
-        if (target.IsAddress) return 3000 + target.PrefixBits;
-        if (target.IsSubnet) return 2000 + target.PrefixBits;
-        return 1000 + target.Value.Length;
+        return target.Priority;
     }
     public static Dictionary<string, object?> BuildConfig(IReadOnlyList<ProxyNode> nodes, IEnumerable<RouteRule> routeRules, AppSettings settings, bool useXraySidecar = false, bool useSingBoxSidecar = false, bool hotRules = false)
     {
@@ -82,8 +80,20 @@ public sealed class VpnCore : IDisposable
             "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
             "IP-CIDR,169.254.0.0/16,DIRECT,no-resolve"
         };
-        for (int i = 0; i < nodes.Count && i < 32; i++)
-            rules.Add($"IN-NAME,vega-probe-node-{i},{nodes[i].Name}");
+        // Mihomo rules use comma-delimited fields, so a user-supplied proxy
+        // name (e.g. "Netherlands, Amsterdam") cannot be a rule target.
+        // Route each diagnostic listener through a safe single-node group.
+        // Keep the original display names unchanged in the proxy list.
+        var reservedGroupNames = new HashSet<string>(nodes.Select(n => n.Name),
+            StringComparer.Ordinal) { "VEGA" };
+        var probeGroups = nodes.Take(32).Select((_, index) =>
+        {
+            string alias = "__prostokvn-probe-" + index;
+            while (!reservedGroupNames.Add(alias)) alias += "-";
+            return alias;
+        }).ToArray();
+        for (int i = 0; i < probeGroups.Length; i++)
+            rules.Add($"IN-NAME,vega-probe-node-{i},{probeGroups[i]}");
         var chosenNode = nodes.FirstOrDefault(x => x.Name == settings.SelectedNode) ?? nodes[0];
         // IPv6 traffic is enabled only if the user explicitly adds an IPv6
         // address/network exception. Existing IPv4-only installations stay unchanged.
@@ -199,7 +209,10 @@ public sealed class VpnCore : IDisposable
             ["proxy-groups"] = new object[]
             {
                 new Dictionary<string, object?> { ["name"] = "VEGA", ["type"] = "select", ["proxies"] = new[] { selected }.Concat(names.Where(n => n != selected)).ToArray() }
-            },
+            }.Concat(probeGroups.Select((alias, index) => (object)new Dictionary<string, object?>
+            {
+                ["name"] = alias, ["type"] = "select", ["proxies"] = new[] { nodes[index].Name }
+            })).ToArray(),
             ["rules"] = rules
         };
         if (hotRules && settings.Mode != "direct")
@@ -419,14 +432,15 @@ public sealed class VpnCore : IDisposable
         || host.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase);
 
     public static bool IsStaleConnection(string host, string[] chains,
-        IReadOnlyList<RouteRule> rules, string mode, string? destinationIp = null, string? processName = null)
+        IReadOnlyList<RouteRule> rules, string mode, string? destinationIp = null, string? processName = null,
+        string? processPath = null)
     {
         if (chains.Length == 0 || mode == "direct") return false;
         // Manual IP/CIDR exceptions must take precedence even over the built-in
         // Telegram process and IP rules, including previously-opened connections.
         var effectiveRule = rules.Where(r => r.Manual
                 && RouteTarget.TryParse(r.Domain, out var target)
-                && target.Matches(host, destinationIp))
+                && target.Matches(host, destinationIp, processName, processPath))
             .OrderByDescending(r => RulePriority(r.Domain))
             .FirstOrDefault();
         // Discord desktop WebRTC sessions have no DNS hostname; they must be
@@ -493,7 +507,9 @@ public sealed class VpnCore : IDisposable
                     ? processName.GetString() ?? "" : "";
                 if (!Guid.TryParse(id, out _)) continue;
                 string[] chain = chainData.EnumerateArray().Select(x => x.GetString() ?? "").ToArray();
-                if (IsStaleConnection(host, chain, rules, mode, ip, owner))
+                string ownerPath = metadata.TryGetProperty("processPath", out var path)
+                    ? path.GetString() ?? "" : "";
+                if (IsStaleConnection(host, chain, rules, mode, ip, owner, ownerPath))
                     ids.Add(id);
             }
             int closed = 0;

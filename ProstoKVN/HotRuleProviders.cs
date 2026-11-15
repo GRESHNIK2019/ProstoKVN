@@ -37,9 +37,7 @@ public static class HotRuleProviders
         int Priority(string value)
         {
             if (!RouteTarget.TryParse(value, out var t)) return -1;
-            if (t.IsAddress) return 3000 + t.PrefixBits;
-            if (t.IsSubnet) return 2000 + t.PrefixBits;
-            return 1000 + t.Value.Length;
+            return t.Priority;
         }
 
         string Target(RouteRule rule)

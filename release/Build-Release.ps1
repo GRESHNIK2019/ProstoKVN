@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$Version = '0.30.2',
+    [string]$Version = '0.33.0',
     [string]$SignTool = '',
     [string]$CertificateThumbprint = '',
     [switch]$AllowUnsignedDev
@@ -12,7 +12,7 @@ $archiveName = "ProstoKVN-$tag-win-x64.zip"
 $dist = Join-Path $root 'dist'
 $out = Join-Path $dist ("ProstoKVN-$tag-win-x64")
 $zip = Join-Path $dist $archiveName
-$old = Join-Path $dist 'ProstoKVN-v0.30.1-win-x64'
+$old = Join-Path $dist 'ProstoKVN-v0.32.0-VLESS-FIX1-20261109'
 
 if (-not $AllowUnsignedDev -and (-not $SignTool -or -not $CertificateThumbprint)) {
     throw 'Для публичного релиза необходим Authenticode. Укажи -SignTool и -CertificateThumbprint. Для локальной проверки используй -AllowUnsignedDev.'
@@ -26,6 +26,8 @@ Push-Location $root
 try {
     dotnet publish '.\ProstoKVN\ProstoKVN.csproj' -c Release -r win-x64 --self-contained true -o $out --nologo -v minimal
     if ($LASTEXITCODE -ne 0) { throw 'Сборка клиента не удалась.' }
+    $actualVersion = (Get-Item (Join-Path $out 'ProstoKVN.exe')).VersionInfo.ProductVersion.Split('+')[0]
+    if ($actualVersion -ne $Version) { throw "Версия клиента $actualVersion не совпадает с версией пакета $Version." }
     $helper = Join-Path $out 'updater'
     New-Item -ItemType Directory -Path $helper -Force | Out-Null
     dotnet publish '.\Updater\ProstoKVN.Updater.csproj' -c Release -r win-x64 --self-contained true -o $helper --nologo -v minimal
@@ -64,7 +66,7 @@ try {
         }
     }
     Copy-Item (Join-Path $old 'core') (Join-Path $out 'core') -Recurse
-    Copy-Item (Join-Path $old 'licenses') (Join-Path $out 'licenses') -Recurse
+    Copy-Item (Join-Path $dist 'ProstoKVN-v0.32.0-win-x64\licenses') (Join-Path $out 'licenses') -Recurse
     Copy-Item (Join-Path $root 'release\licenses\YamlDotNet-MIT.txt') (Join-Path $out 'licenses\YamlDotNet-MIT.txt')
     if (-not $AllowUnsignedDev) {
         foreach ($file in @(

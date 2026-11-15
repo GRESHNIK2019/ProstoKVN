@@ -1,17 +1,20 @@
 param(
-    [string]$Version = '0.30.2',
+    [string]$Version = '0.33.0',
     [string]$CertificateThumbprint = '',
     [switch]$TestSignature,
     [switch]$Unsigned
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Format: major.minor.patch' }
 $root = Split-Path $PSScriptRoot -Parent
 $source = Join-Path $root ("dist\ProstoKVN-v$Version-win-x64")
 $compiler = Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'
 $signTool = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe'
 if (-not (Test-Path $compiler)) { throw 'Inno Setup 6 compiler is not installed.' }
 if (-not (Test-Path $source)) { throw 'Self-contained payload missing.' }
+$actualVersion = (Get-Item (Join-Path $source 'ProstoKVN.exe')).VersionInfo.ProductVersion.Split('+')[0]
+if ($actualVersion -ne $Version) { throw "Client version $actualVersion does not match installer version $Version." }
 if ($TestSignature -and ($Unsigned -or $CertificateThumbprint)) { throw 'Select only one signing mode.' }
 if (-not $TestSignature -and -not $Unsigned -and -not $CertificateThumbprint) {
     throw 'Provide -CertificateThumbprint for trusted signing or explicitly choose -TestSignature / -Unsigned.'
@@ -69,7 +72,7 @@ function Sign-File([string]$file) {
 }
 Sign-File (Join-Path $stage 'ProstoKVN.exe')
 Sign-File (Join-Path $stage 'updater\ProstoKVN.Updater.exe')
-& $compiler '/Qp' ("/DBuildDir=$stage") ("/F$outputName") (Join-Path $PSScriptRoot 'ProstoKVN.iss')
+& $compiler '/Qp' ("/DMyAppVersion=$Version") ("/DBuildDir=$stage") ("/F$outputName") (Join-Path $PSScriptRoot 'ProstoKVN.iss')
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $setup)) { throw 'Inno Setup compilation failed.' }
 Sign-File $setup
 $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLowerInvariant()

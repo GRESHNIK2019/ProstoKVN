@@ -4,6 +4,26 @@ using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using ProstoKVN;
+if (Environment.GetEnvironmentVariable("PROSTOKVN_APPLICATION_ROUTE_TEST") == "1")
+{
+    await ApplicationRoutingTests.RunAsync();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_MIHOMO_COMMA_TEST") == "1")
+{
+    await MihomoCommaRulesTests.RunAsync();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_VLESS_TEST") == "1")
+{
+    await VlessLinkTests.RunAsync();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_SIMPLE_UI_TEST") == "1")
+{
+    SimpleUiTests.Run();
+    return;
+}
 if (Environment.GetEnvironmentVariable("PROSTOKVN_RELIABILITY_TEST") == "1")
 {
     ReliabilityTests.Run();

@@ -1,11 +1,12 @@
 using System;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Net;
 
 namespace ProstoKVN;
 
-public enum RouteTargetKind { Domain, IPv4, IPv6, IPv4Subnet, IPv6Subnet }
+public enum RouteTargetKind { Domain, IPv4, IPv6, IPv4Subnet, IPv6Subnet, ProcessName, ProcessPath }
 
 /// <summary>Validation, normalization and matching for a user-created route target.</summary>
 public readonly record struct RouteTarget(string Value, RouteTargetKind Kind, int PrefixBits)
@@ -13,25 +14,42 @@ public readonly record struct RouteTarget(string Value, RouteTargetKind Kind, in
     public bool IsDomain => Kind == RouteTargetKind.Domain;
     public bool IsAddress => Kind is RouteTargetKind.IPv4 or RouteTargetKind.IPv6;
     public bool IsSubnet => Kind is RouteTargetKind.IPv4Subnet or RouteTargetKind.IPv6Subnet;
+    public bool IsApplication => Kind is RouteTargetKind.ProcessName or RouteTargetKind.ProcessPath;
+    // Prefixes keep existing routes.json entries backward compatible and avoid
+    // interpreting an executable name such as chrome.exe as a domain.
+    public string DisplayValue => IsApplication ? Value[(Value.IndexOf(':') + 1)..] : Value;
+    public int Priority => Kind == RouteTargetKind.ProcessPath ? 5000
+        : Kind == RouteTargetKind.ProcessName ? 4000
+        : IsAddress ? 3000 + PrefixBits : IsSubnet ? 2000 + PrefixBits : 1000 + Value.Length;
     public string DisplayKind => Kind switch
     {
         RouteTargetKind.Domain => "Домен",
+        RouteTargetKind.ProcessName or RouteTargetKind.ProcessPath => "Приложение",
         RouteTargetKind.IPv4 or RouteTargetKind.IPv6 => "IP",
         _ => "Подсеть"
     };
     public string MihomoType => Kind switch
     {
         RouteTargetKind.Domain => "DOMAIN-SUFFIX",
+        RouteTargetKind.ProcessName => "PROCESS-NAME",
+        RouteTargetKind.ProcessPath => "PROCESS-PATH",
         RouteTargetKind.IPv4 or RouteTargetKind.IPv4Subnet => "IP-CIDR",
         _ => "IP-CIDR6"
     };
-    public string MihomoValue => IsDomain ? Value : IsAddress ? Value + "/" + PrefixBits : Value;
+    public string MihomoValue => IsApplication ? DisplayValue : IsAddress ? Value + "/" + PrefixBits : Value;
 
     public string ToRule(string proxy)
-        => IsDomain ? $"DOMAIN-SUFFIX,{Value},{proxy}" : $"{MihomoType},{MihomoValue},{proxy},no-resolve";
+        => $"{MihomoType},{MihomoValue},{proxy}" + (IsDomain || IsApplication ? "" : ",no-resolve");
 
-    public bool Matches(string? host, string? ip)
+    public bool Matches(string? host, string? ip, string? processName = null, string? processPath = null)
     {
+        if (IsApplication)
+        {
+            string owner = !string.IsNullOrWhiteSpace(processPath) ? processPath : processName ?? "";
+            return DisplayValue.Equals(Kind == RouteTargetKind.ProcessName
+                ? Path.GetFileName(owner.Replace('/', '\\')) : owner.Replace('/', '\\'),
+                StringComparison.OrdinalIgnoreCase);
+        }
         if (IsDomain)
         {
             string h = (host ?? "").TrimEnd('.');
@@ -62,6 +80,10 @@ public readonly record struct RouteTarget(string Value, RouteTargetKind Kind, in
     {
         target = default;
         string value = (input ?? "").Trim();
+        if (value.StartsWith("process-name:", StringComparison.OrdinalIgnoreCase))
+            return TryParseApplication(value[13..], out target, nameOnly: true);
+        if (value.StartsWith("process-path:", StringComparison.OrdinalIgnoreCase))
+            return TryParseApplication(value[13..], out target, nameOnly: false);
         if (value.Length == 0 || value.Length > 253 || value.Contains('%'))
             return false;
         if (value.StartsWith("*.", StringComparison.Ordinal))
@@ -114,5 +136,31 @@ public readonly record struct RouteTarget(string Value, RouteTargetKind Kind, in
             return true;
         }
         catch (ArgumentException) { return false; }
+    }
+
+    public static bool TryParseApplication(string? input, out RouteTarget target, bool? nameOnly = null)
+    {
+        target = default;
+        string value = (input ?? "").Trim();
+        if (value.Length >= 2 && value[0] == '"' && value[^1] == '"') value = value[1..^1];
+        // Commas delimit Mihomo rule fields. Wildcards belong to separate rule
+        // types and must never silently change the meaning of an exact match.
+        if (value.Length == 0 || value.Length > 32760 || value.Any(char.IsControl)
+            || value.IndexOfAny(new[] { ',', '*', '?', '"', '<', '>', '|' }) >= 0
+            || !value.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) return false;
+        value = value.Replace('/', '\\');
+        bool path = value.Contains('\\') || value.Contains(':');
+        if (nameOnly == true && path || nameOnly == false && !path) return false;
+        if (path)
+        {
+            if (!Path.IsPathFullyQualified(value)) return false;
+            try { value = Path.GetFullPath(value); }
+            catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { return false; }
+            if (value.IndexOf(':', 2) >= 0) return false;
+        }
+        else if (value.TrimEnd(' ', '.') != value || value == ".exe") return false;
+        target = new RouteTarget((path ? "process-path:" : "process-name:") + value,
+            path ? RouteTargetKind.ProcessPath : RouteTargetKind.ProcessName, 0);
+        return true;
     }
 }

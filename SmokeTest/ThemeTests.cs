@@ -80,11 +80,11 @@ public static class ThemeTests
                     "Surface changes to genuinely dark palette");
                 SavePreview(window, "dark");
                 var tabs = (TabControl)window.FindName("MainTabs");
-                tabs.SelectedIndex = 1;
-                SavePreview(window, "dark-routes");
                 tabs.SelectedIndex = 2;
-                SavePreview(window, "dark-settings");
+                SavePreview(window, "dark-routes");
                 tabs.SelectedIndex = 3;
+                SavePreview(window, "dark-settings");
+                tabs.SelectedIndex = 4;
                 SavePreview(window, "dark-log");
                 window.Close();
 

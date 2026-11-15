@@ -79,7 +79,7 @@ public static class MultiSubscriptionUiTests
                 Check(hide != null, "Onboarding can be exited for isolated GUI test");
                 hide!.Invoke(window, null);
                 var tabs = (TabControl)window.FindName("MainTabs");
-                tabs.SelectedIndex = 2;
+                tabs.SelectedIndex = 1;
                 var section = (Expander)window.FindName("SubscriptionSection");
                 section.IsExpanded = true;
                 window.UpdateLayout();
@@ -135,15 +135,26 @@ public static class MultiSubscriptionUiTests
                     "Switching profiles changes editor without deleting any source");
                 Check(remove.IsEnabled && refreshAll.IsEnabled,
                     "Profile management actions remain active");
+                var edit = (Button)window.FindName("EditSubscriptionButton");
+                var editor = (Expander)window.FindName("SubscriptionEditor");
+                editor.IsExpanded = false;
+                Click(edit);
+                Check(editor.IsExpanded && name.Text == "Резерв",
+                    "Explicit edit action opens the selected subscription");
+                editor.IsExpanded = false;
                 string json = File.ReadAllText(Path.Combine(UserStore.Home, "subscriptions.json"));
                 Check(!json.Contains("/provider-a") && !json.Contains("/provider-b"),
                     "Profile persistence does not leak raw subscription URLs");
                 string? preview = Environment.GetEnvironmentVariable("PROSTOKVN_MULTI_UI_PREVIEW");
                 if (!string.IsNullOrWhiteSpace(preview))
                 {
+                    window.Width = 660;
+                    window.Height = 440;
+                    var subscriptionsScroll = (ScrollViewer)((TabItem)tabs.SelectedItem).Content;
+                    subscriptionsScroll.ScrollToTop();
                     window.UpdateLayout();
-                    int width = Math.Max(750, (int)window.ActualWidth);
-                    int height = Math.Max(485, (int)window.ActualHeight);
+                    int width = Math.Max(1, (int)window.ActualWidth);
+                    int height = Math.Max(1, (int)window.ActualHeight);
                     var render = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
                     render.Render(window);
                     var encoder = new PngBitmapEncoder();
