@@ -89,14 +89,10 @@ public static class SubscriptionProfileStore
         foreach (var (profile, source) in entries)
         {
             if (!profile.Enabled) continue;
-            foreach (var node in source)
+            foreach (var node in source.Take(SubscriptionImporter.MaxServersPerSubscription))
             {
                 if (result.Count >= 2000) return result;
-                var v = node.Values;
-                string Read(string key) => v.TryGetValue(key, out var x) ?
-                    Convert.ToString(x) ?? "" : "";
-                string identity = string.Join("|", Read("type"), Read("server"), Read("port"),
-                    Read("uuid"), Read("password"), Read("network"), Read("servername"));
+                string identity = SubscriptionImporter.NodeKey(node);
                 if (!unique.Add(identity)) continue;
                 string baseName = profile.Name + " · " + node.Name;
                 string display = baseName;

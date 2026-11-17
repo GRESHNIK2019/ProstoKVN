@@ -11,11 +11,42 @@ using System.Threading.Tasks;
 
 namespace ProstoKVN;
 
-public sealed class ProxyNode
+public sealed class ProxyNode : System.ComponentModel.INotifyPropertyChanged
 {
     public string Name { get; set; } = "";
     public string? NativeXrayConfig { get; set; }
     public Dictionary<string, object?> Values { get; set; } = new();
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+    [JsonIgnore] public ServerLatencyResult? Latency { get; private set; }
+    [JsonIgnore] public bool IsLatencyChecking { get; private set; }
+    [JsonIgnore] public string LatencyText => IsLatencyChecking ? "…" : Latency==null ? "—"
+        : Latency.Milliseconds.HasValue ? $"{Latency.Milliseconds} мс" : "Нет ответа";
+    [JsonIgnore] public string LatencyBand => IsLatencyChecking || Latency?.Milliseconds==null ? "Unknown"
+        : Latency.Milliseconds<=100 ? "Fast" : Latency.Milliseconds<=200 ? "Medium" : "Slow";
+    [JsonIgnore] public string LatencyDescription => IsLatencyChecking ? "Проверяем отклик сервера…"
+        : Latency==null ? "Отклик ещё не проверен. TCP для обычных серверов, ICMP для UDP-серверов."
+        : $"{(Latency.Method==ServerLatencyMethod.Tcp?"TCP":"ICMP")} · {Latency.MeasuredUtc.ToLocalTime():HH:mm:ss}. {Latency.Detail}";
+    [JsonIgnore] public string ProtocolCaption
+    {
+        get
+        {
+            string type=Values.TryGetValue("type",out var t)?Convert.ToString(t)??"":"";
+            string network=Values.TryGetValue("network",out var n)?Convert.ToString(n)??"":"";
+            return type.ToLowerInvariant() switch
+            {
+                "hysteria2" or "hy2" => "Hysteria2 · UDP", "tuic" => "TUIC · UDP",
+                _ => type.ToUpperInvariant()+(network.Length>0?" · "+network.ToUpperInvariant():" · TCP")
+            };
+        }
+    }
+    public void BeginLatencyCheck(){IsLatencyChecking=true;NotifyLatency();}
+    public void CompleteLatencyCheck(ServerLatencyResult? result)
+    {if(result!=null)Latency=result;IsLatencyChecking=false;NotifyLatency();}
+    private void NotifyLatency()
+    {
+        foreach(string name in new[]{nameof(Latency),nameof(IsLatencyChecking),nameof(LatencyText),nameof(LatencyBand),nameof(LatencyDescription)})
+            PropertyChanged?.Invoke(this,new System.ComponentModel.PropertyChangedEventArgs(name));
+    }
     public override string ToString() => Name;
 }
 public sealed class RouteRule

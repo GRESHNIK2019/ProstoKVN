@@ -170,8 +170,9 @@ public static class MultiSubscriptionTests
             && !xr.Nodes[0].NativeXrayConfig!.Contains("routing"),
             "Auto-detects Xray vnext while stripping imported routing and DNS");
         var sanitized = XraySidecar.BuildConfig(xr.Nodes[0].NativeXrayConfig!);
-        Check(sanitized["dns"] == null && sanitized["outbounds"] is System.Text.Json.Nodes.JsonArray a
-            && a.Count == 1, "Xray native sidecar uses only one sanitized outbound");
+        Check(sanitized["dns"]?["servers"]?[0]?.ToString()=="https+local://1.1.1.1/dns-query"
+            && sanitized["outbounds"] is System.Text.Json.Nodes.JsonArray a && a.Count == 1,
+            "Xray uses one sanitized outbound and its own endpoint resolver");
 
         SubscriptionTransport.TestVpnAvailable = () => Task.FromResult(false);
         SubscriptionTransport.TestFetch = (vpn, url) => Task.FromResult(mihomo);

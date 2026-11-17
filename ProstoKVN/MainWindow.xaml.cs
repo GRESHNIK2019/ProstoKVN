@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -35,6 +35,8 @@ public partial class MainWindow : Window
     private AppSettings settings = new();
     private List<RouteRule> rules = new();
     private RouteRule? editingRule;
+    private bool applicationRulePage;
+    private string siteRuleQuery = "", applicationRuleQuery = "";
     private List<ProxyNode> nodes = new();
     private List<SubscriptionProfile> profiles = new();
     private readonly Dictionary<string, List<ProxyNode>> profileNodes = new();
@@ -59,6 +61,12 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        // Keep the first window inside the usable desktop at high display scaling.
+        var workArea = SystemParameters.WorkArea;
+        MinWidth = Math.Min(MinWidth, Math.Max(400, workArea.Width - 32));
+        MinHeight = Math.Min(MinHeight, Math.Max(360, workArea.Height - 32));
+        Width = Math.Max(MinWidth, Math.Min(Width, workArea.Width - 32));
+        Height = Math.Max(MinHeight, Math.Min(Height, workArea.Height - 32));
         var appVersion = typeof(MainWindow).Assembly.GetName().Version;
         string release = appVersion == null ? "dev" : $"{appVersion.Major}.{appVersion.Minor}"
             + (appVersion.Build > 0 ? $".{appVersion.Build}" : "");
@@ -124,10 +132,14 @@ public partial class MainWindow : Window
         profiles = SubscriptionProfileStore.Load(settings);
         RefreshSubscriptionList(profiles.FirstOrDefault());
         AutoLearnBox.IsChecked = settings.AutoLearn;
+        if (settings.Mode == "apps") settings.Tun = true;
         TunBox.IsChecked = settings.Tun;
-        ModeBox.SelectedIndex = settings.Mode == "vpn" ? 1 : settings.Mode == "direct" ? 2 : 0;
+        TunBox.IsEnabled = settings.Mode != "apps";
+        AutoLearnBox.IsEnabled = settings.Mode != "apps";
+        ModeBox.SelectedIndex = settings.Mode == "vpn" ? 1 : settings.Mode == "direct" ? 2 : settings.Mode == "apps" ? 3 : 0;
         UserStore.PruneExpiredRules(rules);
         RefreshRules();
+        UpdateRuleCategoryButtons();
         RefreshNodeChoices();
         UpdateConnectionUi();
         core.OnLog += msg => Dispatcher.BeginInvoke(() => { AppendLog(msg); ObserveDomainFromLog(msg); });
@@ -153,6 +165,7 @@ public partial class MainWindow : Window
             // otherwise the core can turn the system proxy back on after exit.
             args.Cancel = true;
             isWindowClosing = true;
+            ResetServerLatencySession();
             recovery.Disable();
             ++connectionRevision;
             monitorTimer.Stop();
@@ -244,14 +257,20 @@ public partial class MainWindow : Window
         ConnectButton.SetResourceReference(Control.BorderBrushProperty,
             active || desired ? "BorderStrong" : "AccentSolid");
         ModeDescription.Text = ModeBox.SelectedIndex == 1
-            ? "Трафик приложений, охваченных VPN, идёт через выбранный сервер. Ручные правила имеют приоритет."
+            ? "Весь интернет через выбранный сервер, кроме ручных исключений DIRECT."
             : ModeBox.SelectedIndex == 2
-                ? "Интернет работает напрямую. Ручные правила для отдельных адресов сохраняют приоритет."
-                : "VPN используется по правилам и при обнаружении ограничений. Остальные адреса открываются напрямую.";
-        CoverageHint.Text = settings.Tun ? "Все приложения" : "Браузер и системный прокси";
-        CoverageHint.ToolTip = settings.Tun
-            ? "VPN охватывает все приложения. Для запуска TUN нужны права администратора."
-            : "VPN охватывает приложения с системным прокси Windows. Для игр и звонков включите все приложения в настройках.";
+                ? "Интернет работает напрямую. VPN не используется."
+                : ModeBox.SelectedIndex == 3
+                    ? "Discord (включая голосовой UDP) и ваши ручные правила через VPN. Все остальные приложения и сайты — напрямую (DIRECT). TUN включается автоматически."
+                    : "VPN используется по правилам и при обнаружении ограничений. Остальные адреса открываются напрямую.";
+        CoverageHint.Text = settings.Mode == "apps"
+            ? "TUN · Discord и выбранные вручную"
+            : settings.Tun ? "TUN · маршрутизация по правилам" : "Браузер и системный прокси";
+        CoverageHint.ToolTip = settings.Mode == "apps"
+            ? "TUN перехватывает трафик для применения правил. По умолчанию DIRECT; через VPN только Discord и ручные правила. Нужны права администратора."
+            : settings.Tun
+                ? "TUN охватывает приложения, но решение DIRECT/VPN принимает режим и правила."
+                : "Системный прокси не перехватывает голосовой UDP и трафик большинства игр.";
         ServerHint.Text = nodes.Count == 0 ? "Нет серверов. Добавьте или обновите подписку."
             : active ? "При выборе другого сервера соединение переключится автоматически."
             : "Этот сервер будет использован при подключении.";
@@ -272,14 +291,63 @@ public partial class MainWindow : Window
 
     private void RuleSearch_Changed(object sender, TextChangedEventArgs e)
     {
-        if (RulesList != null) RefreshRules();
+        if (RulesList == null || RuleSearchBox == null) return;
+        if (applicationRulePage) applicationRuleQuery = RuleSearchBox.Text;
+        else siteRuleQuery = RuleSearchBox.Text;
+        RefreshRules();
+    }
+
+    private void SitesRules_Click(object sender, RoutedEventArgs e) => SwitchRuleCategory(false);
+    private void ApplicationsRules_Click(object sender, RoutedEventArgs e) => SwitchRuleCategory(true);
+
+    private void UpdateRuleCategoryButtons()
+    {
+        if (SitesRulesButton == null || ApplicationsRulesButton == null) return;
+        SitesRulesButton.FontWeight = applicationRulePage ? FontWeights.Normal : FontWeights.SemiBold;
+        ApplicationsRulesButton.FontWeight = applicationRulePage ? FontWeights.SemiBold : FontWeights.Normal;
+        SitesRulesButton.SetResourceReference(Control.BackgroundProperty,
+            applicationRulePage ? "SurfaceRaised" : "AccentSoft");
+        ApplicationsRulesButton.SetResourceReference(Control.BackgroundProperty,
+            applicationRulePage ? "AccentSoft" : "SurfaceRaised");
+        SitesRulesButton.SetResourceReference(Control.BorderBrushProperty,
+            applicationRulePage ? "Line" : "AccentSolid");
+        ApplicationsRulesButton.SetResourceReference(Control.BorderBrushProperty,
+            applicationRulePage ? "AccentSolid" : "Line");
+    }
+
+    private void SwitchRuleCategory(bool applications)
+    {
+        if (RuleSearchBox == null || RulesList == null || applicationRulePage == applications) return;
+        if (applicationRulePage) applicationRuleQuery = RuleSearchBox.Text;
+        else siteRuleQuery = RuleSearchBox.Text;
+        applicationRulePage = applications;
+        RulesList.SelectedItem = null;
+        editingRule = null;
+        AddRuleSection.IsExpanded = false;
+        DomainBox.Clear();
+        RuleLabelBox.Clear();
+        RuleTargetKindBox.SelectedIndex = applications ? 1 : 0;
+        RuleTargetKindLabel.Text = applications ? "Приложения" : "Сайты и IP";
+        RuleSearchLabel.Text = applications ? "Поиск приложений" : "Поиск сайтов и IP";
+        RuleSearchBox.ToolTip = applications ? "Имя процесса, путь к .exe или название"
+            : "Домен, IP-адрес или название сайта";
+        NewRuleButton.Content = applications ? "Добавить приложение" : "Добавить сайт или IP";
+        RuleGroupsSection.Header = applications ? "Приложения — сохранённые правила"
+            : "Сайты и IP — сохранённые правила";
+        RulesEmptyText.Text = applications
+            ? "Приложений пока нет. Добавьте программу, чтобы настроить её маршрут."
+            : "Сайты и IP не найдены. Измените поиск или добавьте правило.";
+        RuleSearchBox.Text = applications ? applicationRuleQuery : siteRuleQuery;
+        UpdateRuleCategoryButtons();
+        RefreshRules();
+        RulesPageScroll.ScrollToTop();
     }
 
     private void NewRule_Click(object sender, RoutedEventArgs e)
     {
         RulesList.SelectedItem = null;
         editingRule = null;
-        RuleTargetKindBox.SelectedIndex = 0;
+        RuleTargetKindBox.SelectedIndex = applicationRulePage ? 1 : 0;
         DomainBox.Clear();
         RuleLabelBox.Clear();
         RuleRouteBox.SelectedIndex = 1;
@@ -297,6 +365,20 @@ public partial class MainWindow : Window
         AddRuleSection.IsExpanded = true;
         DomainBox.BringIntoView();
         DomainBox.Focus();
+    }
+
+    private void CloseRuleEditor_Click(object sender, RoutedEventArgs e)
+    {
+        AddRuleSection.IsExpanded = false;
+        RulesPageScroll.ScrollToTop();
+        NewRuleButton.Focus();
+    }
+
+    private void CloseSubscriptionEditor_Click(object sender, RoutedEventArgs e)
+    {
+        SubscriptionEditor.IsExpanded = false;
+        SubscriptionsPageScroll.ScrollToTop();
+        NewSubscriptionButton.Focus();
     }
 
     private async void CheckUpdate_Click(object sender, RoutedEventArgs e)
@@ -357,7 +439,7 @@ public partial class MainWindow : Window
             UpdateStatusText.Text = "Обновления доступны только в установленной сборке ProstoKVN.";
             return;
         }
-        var result = MessageBox.Show(
+        var result = ClientDialog.Show(this,
             $"Скачать {release.Tag} с GitHub?\n\n" +
             "После загрузки и проверки SHA-256 приложение будет закрыто, " +
             "VPN временно отключится, файлы обновятся и ProstoKVN запустится снова.\n\n" +
@@ -442,7 +524,7 @@ public partial class MainWindow : Window
     }
     private void Persist()
     {
-        settings.Mode = ModeBox.SelectedIndex == 1 ? "vpn" : ModeBox.SelectedIndex == 2 ? "direct" : "smart";
+        settings.Mode = ModeBox.SelectedIndex == 1 ? "vpn" : ModeBox.SelectedIndex == 2 ? "direct" : ModeBox.SelectedIndex == 3 ? "apps" : "smart";
         settings.Tun = TunBox.IsChecked == true;
         settings.AutoLearn = AutoLearnBox.IsChecked == true;
         settings.SelectedNode = (ServerBox.SelectedItem as ProxyNode)?.Name ?? settings.SelectedNode;
@@ -467,7 +549,7 @@ public partial class MainWindow : Window
         UpdateConnectionUi();
     }
 
-    private void RefreshSubscriptionList(SubscriptionProfile? chosen = null)
+    private void RefreshSubscriptionList(SubscriptionProfile? chosen = null, bool preserveEditor = false)
     {
         suppressProfileSelection = true;
         string? id = chosen?.Id ?? (SubscriptionList.SelectedItem as SubscriptionProfile)?.Id;
@@ -475,7 +557,7 @@ public partial class MainWindow : Window
         SubscriptionList.ItemsSource = profiles.ToList();
         SubscriptionList.SelectedItem = profiles.FirstOrDefault(p => p.Id == id);
         suppressProfileSelection = false;
-        DisplaySelectedSubscription();
+        if (!preserveEditor) DisplaySelectedSubscription();
         ImportSummary.Text = $"{profiles.Count} подписок • {nodes.Count} серверов";
         UpdateConnectionUi();
     }
@@ -507,20 +589,33 @@ public partial class MainWindow : Window
     private void SubscriptionList_SelectionChanged(object sender, SelectionChangedEventArgs e)
         => DisplaySelectedSubscription();
 
+    private (object? Profile, string Name, string Url, object? Format, bool Expanded) CaptureSubscriptionEditor()
+        => (SubscriptionList.SelectedItem, SubscriptionNameBox.Text, SubscriptionBox.Text,
+            SubscriptionFormatBox.SelectedItem, SubscriptionEditor.IsExpanded);
+
     private void NewSubscription_Click(object sender, RoutedEventArgs e)
     {
         SubscriptionList.SelectedItem = null;
         SubscriptionEditor.IsExpanded = true;
-        SubscriptionBox.BringIntoView();
-        SubscriptionBox.Focus();
+        ShowSubscriptionEditor(SubscriptionBox);
     }
 
     private void EditSubscription_Click(object sender, RoutedEventArgs e)
     {
         if (SubscriptionList.SelectedItem is not SubscriptionProfile) return;
         SubscriptionEditor.IsExpanded = true;
-        SubscriptionNameBox.BringIntoView();
-        SubscriptionNameBox.Focus();
+        ShowSubscriptionEditor(SubscriptionNameBox);
+    }
+
+    private void ShowSubscriptionEditor(TextBox focus)
+    {
+        SubscriptionSection.IsExpanded = true;
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            SubscriptionsPageScroll.ScrollToTop();
+            focus.BringIntoView();
+            focus.Focus();
+        }));
     }
 
     private void RemoveSubscription_Click(object sender, RoutedEventArgs e)
@@ -528,7 +623,7 @@ public partial class MainWindow : Window
         if (importing || SubscriptionList.SelectedItem is not SubscriptionProfile selected) return;
         bool confirmed = confirmRemoveSubscriptionOverride != null
             ? confirmRemoveSubscriptionOverride(selected)
-            : MessageBox.Show(this,
+            : ClientDialog.Show(this,
                 $"Удалить подписку «{selected.Name}» и убрать её серверы из списка?\n" +
                 "Текущее VPN-соединение не будет разорвано.",
                 "Удаление подписки", MessageBoxButton.YesNo, MessageBoxImage.Question,
@@ -556,6 +651,7 @@ public partial class MainWindow : Window
 
     private void RebuildServerList()
     {
+        ResetServerLatencySession();
         var preferred = (ServerBox.SelectedItem as ProxyNode)?.Name ?? settings.SelectedNode;
         var merged = SubscriptionProfileStore.Merge(profiles
             .Where(p => profileNodes.ContainsKey(p.Id))
@@ -575,6 +671,7 @@ public partial class MainWindow : Window
             UpdateEngineInfo();
         }
         finally { importing = wasImporting; }
+        UpdateLatencyUi();
         ImportSummary.Text = $"{profiles.Count} подписок • {nodes.Count} серверов";
         UpdateConnectionUi();
     }
@@ -582,17 +679,24 @@ public partial class MainWindow : Window
     private void StoreImportedProfile(SubscriptionProfile profile,
         SubscriptionImporter.Result imported, bool persist, bool select = true)
     {
-        profileNodes[profile.Id] = imported.Nodes;
-        profile.NodeCount = imported.Nodes.Count;
+        var limited = imported.Nodes.Take(SubscriptionImporter.MaxServersPerSubscription).ToList();
+        profileNodes[profile.Id] = limited;
+        profile.NodeCount = limited.Count;
         profile.LastUpdatedUtc = DateTime.UtcNow;
         profile.DetectedFormat = imported.DetectedFormat;
         if (persist)
         {
             SubscriptionProfileStore.Save(profiles);
-            SubscriptionCache.Save(profile.Url, imported.Nodes);
+            SubscriptionCache.Save(profile.Url, limited);
         }
         RebuildServerList();
         if (select) RefreshSubscriptionList(profile);
+        if (imported.ServerLimitReached || imported.Nodes.Count > limited.Count)
+        {
+            if (select)
+                ProfileStatusText.Text = $"Добавлены первые {limited.Count} серверов. Лимит на одну ссылку — {SubscriptionImporter.MaxServersPerSubscription}.";
+            AppendLog($"Подписка «{profile.Name}»: применён лимит {SubscriptionImporter.MaxServersPerSubscription} серверов.");
+        }
     }
 
     private void ApplyImportedSubscription(SubscriptionImporter.Result imported)
@@ -643,9 +747,11 @@ public partial class MainWindow : Window
         ImportButton.IsEnabled = false;
         RefreshButton.IsEnabled = false;
         RefreshAllSubscriptionsButton.IsEnabled = false;
+        var editorBeforeLoad = CaptureSubscriptionEditor();
         try
         {
             int failures = 0;
+            string? accessMessage = null;
             bool staleEdit = false;
             var snapshot = profiles.ToArray();
             ImportSummary.Text = $"Обновляю подписки: {snapshot.Length} источников...";
@@ -683,6 +789,9 @@ public partial class MainWindow : Window
                 if (response.Error != null)
                 {
                     failures++;
+                    if (response.Error is SubscriptionAccessException access
+                        && ReferenceEquals(SubscriptionList.SelectedItem, profile))
+                        accessMessage = access.Message;
                     AppendLog($"Не удалось обновить «{profile.Name}»: {response.Error.GetType().Name}.");
                     continue;
                 }
@@ -701,9 +810,13 @@ public partial class MainWindow : Window
                 AppendLog($"Обновлена подписка «{profile.Name}»: {response.Result.Nodes.Count} серверов.");
             }
             RebuildServerList();
-            if (!staleEdit)
+            if (!staleEdit && CaptureSubscriptionEditor() == editorBeforeLoad)
                 RefreshSubscriptionList(SubscriptionList.SelectedItem as SubscriptionProfile
                     ?? profiles.FirstOrDefault());
+            else
+                RefreshSubscriptionList(preserveEditor: true);
+            if (accessMessage != null && CaptureSubscriptionEditor() == editorBeforeLoad)
+                ProfileStatusText.Text = accessMessage;
             if (staleEdit)
                 ImportSummary.Text = "Ссылка изменена";
             else if (failures > 0)
@@ -743,6 +856,8 @@ public partial class MainWindow : Window
             return;
         }
 
+        var editedProfile = SubscriptionList.SelectedItem as SubscriptionProfile;
+        var editorBeforeLoad = CaptureSubscriptionEditor();
         importing = true;
         ImportButton.IsEnabled = false;
         RefreshButton.IsEnabled = false;
@@ -752,7 +867,7 @@ public partial class MainWindow : Window
         {
             var imported = await SubscriptionImporter.LoadAsync(url, format);
             if (isWindowClosing) return;
-            var selected = SubscriptionList.SelectedItem as SubscriptionProfile;
+            var selected = editedProfile;
             var duplicate = profiles.FirstOrDefault(p => p.Url == url && p.Id != selected?.Id);
             if (duplicate != null)
                 throw new InvalidOperationException("Эта подписка уже добавлена.");
@@ -769,13 +884,16 @@ public partial class MainWindow : Window
             if (previousUrl.Length > 0 && previousUrl != url)
                 profileNodes.Remove(previousId);
             settings.ProtectedUrl = selected.ProtectedUrl; // One legacy fallback for rollback.
-            StoreImportedProfile(selected, imported, persist: true);
+            bool updateEditor = CaptureSubscriptionEditor() == editorBeforeLoad;
+            StoreImportedProfile(selected, imported, persist: true, select: updateEditor);
+            if (!updateEditor) RefreshSubscriptionList(preserveEditor: true);
             UserStore.SaveSettings(settings);
             AppendLog($"Добавлена/обновлена подписка «{selected.Name}»: {imported.Nodes.Count} серверов.");
         }
         catch (Exception ex)
         {
-            ProfileStatusText.Text = "Не удалось импортировать. Проверь ссылку и формат.";
+            ProfileStatusText.Text = ex is SubscriptionAccessException ? ex.Message
+                : "Не удалось импортировать. Проверь ссылку и формат.";
             AppendLog("Импорт подписки: " + ex.GetType().Name);
         }
         finally
@@ -863,7 +981,7 @@ public partial class MainWindow : Window
         {
             StatusLabel.Text = "Не удалось подключиться";
             AppendLog("Ошибка запуска: " + ex.Message);
-            MessageBox.Show(ex.Message, "ProstoKVN", MessageBoxButton.OK, MessageBoxImage.Error);
+            ClientDialog.Show(this,ex.Message, "ProstoKVN", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally { connectionBusy = false; ConnectButton.IsEnabled = true; UpdateConnectionUi(); }
     }
@@ -898,12 +1016,17 @@ public partial class MainWindow : Window
     private void ModeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!IsLoaded) return;
+        bool appsOnly = ModeBox.SelectedIndex == 3;
+        if (appsOnly) TunBox.IsChecked = true;
+        TunBox.IsEnabled = !appsOnly;
+        AutoLearnBox.IsEnabled = !appsOnly;
         Persist();
         UpdateConnectionUi();
         if (core.IsRunning) AppendLog("Режим изменён. Переподключись для применения.");
     }
     private void ServerBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        UpdateLatencyUi();
         if (!IsLoaded || ServerBox.SelectedItem == null) return;
         UpdateEngineInfo();
         Persist();
@@ -1053,7 +1176,8 @@ public partial class MainWindow : Window
         RouteRule? selected = RulesList.SelectedItem as RouteRule;
         RulesList.ItemsSource = null;
         string query = RuleSearchBox?.Text.Trim() ?? "";
-        var ordered = rules.Where(x => query.Length == 0
+        var ordered = rules.Where(x => (RouteTarget.TryParse(x.Domain, out var target) && target.IsApplication) == applicationRulePage)
+            .Where(x => query.Length == 0
                 || x.Domain.Contains(query, StringComparison.OrdinalIgnoreCase)
                 || x.ServiceName.Contains(query, StringComparison.OrdinalIgnoreCase)
                 || x.Label.Contains(query, StringComparison.OrdinalIgnoreCase))
@@ -1065,7 +1189,7 @@ public partial class MainWindow : Window
         RulesList.ItemsSource = view;
         if (RulesEmptyText != null)
             RulesEmptyText.Visibility = ordered.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        if (selected != null && rules.Contains(selected)) RulesList.SelectedItem = selected;
+        if (selected != null && ordered.Contains(selected)) RulesList.SelectedItem = selected;
         if (savedOffset > 0)
             Dispatcher.BeginInvoke(DispatcherPriority.Loaded,
                 new Action(() => RulesPageScroll?.ScrollToVerticalOffset(savedOffset)));
@@ -1095,8 +1219,8 @@ public partial class MainWindow : Window
         ChooseApplicationButton.Visibility = ApplicationRuleHint.Visibility = application
             ? Visibility.Visible : Visibility.Collapsed;
         RuleAddressHint.Visibility = application ? Visibility.Collapsed : Visibility.Visible;
-        RuleTargetCaption.Text = application ? "Приложение, способ подключения и сервер"
-            : "Адрес сайта или IP, способ подключения и сервер";
+        RuleTargetCaption.Text = application ? "Путь к приложению или имя процесса"
+            : "Адрес сайта или IP";
         DomainBox.ToolTip = application ? "Полный путь к .exe или имя процесса, например chrome.exe"
             : "Домен: example.com • IP: 8.8.8.8 • Подсеть: 1.2.3.0/24 • IPv6: 2001:db8::/32";
         System.Windows.Automation.AutomationProperties.SetName(DomainBox,
@@ -1117,7 +1241,7 @@ public partial class MainWindow : Window
         if (picker.ShowDialog(this) != true) return;
         if (!RouteTarget.TryParseApplication(picker.FileName, out var target))
         {
-            MessageBox.Show("Этот путь нельзя использовать в правиле. Выберите .exe без запятых в пути.",
+            ClientDialog.Show(this,"Этот путь нельзя использовать в правиле. Выберите .exe без запятых в пути.",
                 "ProstoKVN", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
@@ -1216,7 +1340,7 @@ public partial class MainWindow : Window
             : RouteTarget.TryParse(DomainBox.Text, out target) && !target.IsApplication;
         if (!valid)
         {
-            MessageBox.Show(IsApplicationRule
+            ClientDialog.Show(this,IsApplicationRule
                 ? "Выберите .exe или введите имя процесса (chrome.exe) либо полный путь к файлу.\nЗапятые и маски в пути не поддерживаются."
                 : "Введите корректный домен, IP-адрес или подсеть CIDR.\nПримеры: example.com, 8.8.8.8, 1.2.3.0/24, 2001:db8::/32.",
                 "ProstoKVN", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -1282,7 +1406,7 @@ public partial class MainWindow : Window
             : "\nЭто автоматическое правило может появиться снова при обучении маршрутов.";
         bool confirmed = confirmDeleteOverride != null
             ? confirmDeleteOverride(selected)
-            : MessageBox.Show(this,
+            : ClientDialog.Show(this,
                 $"Удалить правило «{selected.Domain}»?\nМаршрут: " +
                 (selected.Route == "VEGA" ? "СЕРВЕР" : selected.Route) +
                 additional + "\n\nИзменение будет сохранено и применено к VPN.",
@@ -1316,7 +1440,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             AppendLog("Не удалось удалить правило: " + ex.GetType().Name);
-            MessageBox.Show(this,
+            ClientDialog.Show(this,
                 "Не удалось сохранить удаление правила. Проверь права доступа к настройкам.",
                 "ProstoKVN", MessageBoxButton.OK, MessageBoxImage.Error);
         }

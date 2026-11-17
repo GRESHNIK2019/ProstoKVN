@@ -1,6 +1,6 @@
-﻿#define MyAppName "ProstoKVN"
+#define MyAppName "ProstoKVN"
 #ifndef MyAppVersion
-#define MyAppVersion "0.33.0"
+#define MyAppVersion "0.34.0"
 #endif
 #define MyPublisher "ProstoKVN"
 #ifndef BuildDir

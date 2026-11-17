@@ -100,16 +100,16 @@ public static class SimpleUiTests
                 w.Show();
                 Pump(w);
                 Check(Get<OnboardingView>(w, "OnboardingPanel").IsVisible, "Fresh install opens subscription setup");
-                Check(!Children(Get<OnboardingView>(w, "OnboardingPanel")).OfType<ScrollViewer>()
-                    .Any(v => v.IsVisible && v.TemplatedParent is not TextBox),
-                    "First-run subscription setup has no scrolling surface");
+                Check(!Children(Get<OnboardingView>(w, "OnboardingPanel")).OfType<System.Windows.Controls.Primitives.ScrollBar>()
+                    .Any(v => v.IsVisible), "First-run setup fits without a scrollbar at the default size");
                 Save(w, "01-welcome");
                 Invoke(w, "HideOnboarding");
                 var tabs = Get<TabControl>(w, "MainTabs");
                 Check(tabs.Items.Cast<TabItem>().Select(t => (string)t.Header).SequenceEqual(new[] {
                     "Подключение", "Подписки", "Правила", "Настройки", "Помощь" }), "Task-based navigation is in expected order");
-                Check(w.Width == 660 && w.Height == 440, "Compact window defaults to 660 by 440 DIP");
-                Check(System.Windows.Shell.WindowChrome.GetWindowChrome(w)?.CaptionHeight == 48,
+                Check(w.Width >= w.MinWidth && w.Width <= 1040 && w.Height >= w.MinHeight && w.Height <= 740,
+                    "Window starts within the desktop with a spacious default size");
+                Check(System.Windows.Shell.WindowChrome.GetWindowChrome(w)?.CaptionHeight == 52,
                     "Single custom caption supports native drag and resize");
                 foreach (string name in new[] { "MinimizeWindowButton", "MaximizeWindowButton", "CloseWindowButton" })
                     Check(Get<Button>(w, name).IsEnabled, "Window action is available: " + name);
@@ -174,9 +174,11 @@ public static class SimpleUiTests
                 Invoke(w, "UpdateConnectionUi");
                 Save(w, "05-settings");
                 var settingsScroll = (ScrollViewer)((TabItem)tabs.SelectedItem).Content;
-                Check(!Children((DependencyObject)((TabItem)tabs.SelectedItem).Content)
-                    .OfType<System.Windows.Controls.Primitives.ScrollBar>().Any(b => b.IsVisible),
-                    "Default settings fit without a visible scrollbar");
+                Get<Button>(w, "ApplySettingsButton").BringIntoView(); Pump(w);
+                var applyBounds=Get<Button>(w,"ApplySettingsButton").TransformToAncestor(w)
+                    .TransformBounds(new Rect(Get<Button>(w,"ApplySettingsButton").RenderSize));
+                Check(applyBounds.Bottom<w.ActualHeight && applyBounds.Top>=52,
+                    "Pending settings action stays reachable in a short window");
                 tabs.SelectedIndex = 2;
                 Set(w, "rules", new List<RouteRule> {
                     new() { Domain = "example.com", Label = "Работа", Route = "VEGA", Manual = true },

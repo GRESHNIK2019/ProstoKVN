@@ -130,7 +130,8 @@ public static class ApplicationRoutingTests
                 Get<TabControl>("MainTabs").SelectedIndex = 2;
                 Invoke("NewRule_Click");
                 Check(Get<Button>("ChooseApplicationButton").Visibility == Visibility.Collapsed, "Site editor remains the default");
-                Get<ComboBox>("RuleTargetKindBox").SelectedIndex = 1;
+                Invoke("ApplicationsRules_Click");
+                Invoke("NewRule_Click");
                 Pump();
                 Check(Get<Button>("ChooseApplicationButton").IsVisible && Get<TextBlock>("ApplicationRuleHint").IsVisible,
                     "Application editor exposes executable picker and TUN instructions");
@@ -169,7 +170,7 @@ public static class ApplicationRoutingTests
                 using (var file = File.Create(preview)) encoder.Save(file);
                 Console.WriteLine("APPLICATION_EDITOR_PREVIEW=" + preview);
                 Invoke("NewRule_Click");
-                Check(Get<ComboBox>("RuleTargetKindBox").SelectedIndex == 0 && Get<TextBox>("DomainBox").Text == "", "New rule resets application editor");
+                Check(Get<ComboBox>("RuleTargetKindBox").SelectedIndex == 1 && Get<TextBox>("DomainBox").Text == "", "New rule resets fields within the application section");
             }
             catch (Exception e) { failure = e; }
             finally { window?.Close(); }

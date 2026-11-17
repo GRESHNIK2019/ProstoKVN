@@ -129,6 +129,7 @@
  <SolidColorBrush x:Key="Line" Color="#DFE0E8"/>
  <SolidColorBrush x:Key="BorderStrong" Color="#C8CAD5"/>
  <SolidColorBrush x:Key="SuccessSoft" Color="#E7F4EE"/>
+ <SolidColorBrush x:Key="SuccessInk" Color="#21714D"/>
  <SolidColorBrush x:Key="WarningSoft" Color="#FFF3D9"/>
  <SolidColorBrush x:Key="DangerSoft" Color="#FDECEF"/>
  <SolidColorBrush x:Key="DangerInk" Color="#AF2D43"/>

@@ -5,6 +5,8 @@ using System.Net.Sockets;
 using System.IO;
 using System.Text;
 using System.Threading.Tasks;
+using System.Collections.Concurrent;
+using System.Net.Http.Headers;
 
 namespace ProstoKVN;
 
@@ -19,6 +21,16 @@ public static class SubscriptionTransport
     private static readonly HttpClient ThroughVpn = CreateVpn();
     public static Func<bool, string, Task<string>>? TestFetch;
     public static Func<Task<bool>>? TestVpnAvailable;
+    public static Func<bool, HttpRequestMessage, Task<HttpResponseMessage>>? TestSend;
+    private static readonly ConcurrentDictionary<string, byte> HwidOrigins = new(StringComparer.OrdinalIgnoreCase);
+
+    public static bool RequiresHardwareIdentity(string url)
+        => Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && HwidOrigins.ContainsKey(uri.GetLeftPart(UriPartial.Authority));
+
+    private static bool HeaderTrue(HttpResponseHeaders headers, string name)
+        => headers.TryGetValues(name, out var values)
+            && values.Any(x => x.Equals("true", StringComparison.OrdinalIgnoreCase));
 
     private static HttpClient CreateDirect() => new(new HttpClientHandler
     {
@@ -52,10 +64,35 @@ public static class SubscriptionTransport
     private static async Task<string> FetchAsync(string url, bool vpn)
     {
         if (TestFetch is { } callback) return await callback(vpn, url);
+        return await FetchHttpAsync(url, vpn, RequiresHardwareIdentity(url));
+    }
+
+    private static async Task<string> FetchHttpAsync(string url, bool vpn, bool includeDevice)
+    {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.TryAddWithoutValidation("User-Agent", "ProstoKVN/0.30.2");
-        using var response = await (vpn ? ThroughVpn : Direct)
-            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        var version = typeof(SubscriptionTransport).Assembly.GetName().Version;
+        request.Headers.TryAddWithoutValidation("User-Agent", $"ProstoKVN/{version?.Major}.{version?.Minor}.{version?.Build}");
+        request.Headers.TryAddWithoutValidation("Accept", "application/json, text/plain;q=0.9, */*;q=0.1");
+        if (includeDevice)
+        {
+            request.Headers.TryAddWithoutValidation("x-hwid", SubscriptionDeviceIdentity.Id);
+            request.Headers.TryAddWithoutValidation("x-device-os", "Windows");
+            request.Headers.TryAddWithoutValidation("x-ver-os", Environment.OSVersion.Version.ToString());
+            request.Headers.TryAddWithoutValidation("x-device-model", "ProstoKVN Windows");
+        }
+        using var response = TestSend is { } send ? await send(vpn, request)
+            : await (vpn ? ThroughVpn : Direct).SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        if (!includeDevice && (HeaderTrue(response.Headers, "x-hwid-not-supported")
+            || HeaderTrue(response.Headers, "x-hwid-active")))
+        {
+            HwidOrigins.TryAdd(new Uri(url).GetLeftPart(UriPartial.Authority), 0);
+            response.Dispose();
+            return await FetchHttpAsync(url, vpn, includeDevice: true);
+        }
+        if (HeaderTrue(response.Headers, "x-hwid-max-devices-reached") || HeaderTrue(response.Headers, "x-hwid-limit"))
+            throw new SubscriptionAccessException(SubscriptionAccessFailure.DeviceLimit);
+        if (HeaderTrue(response.Headers, "x-hwid-not-supported"))
+            throw new SubscriptionAccessException(SubscriptionAccessFailure.DeviceIdentity);
         response.EnsureSuccessStatusCode();
         if (response.Content.Headers.ContentLength > MaxResponseBytes)
             throw new InvalidOperationException("Подписка слишком большая (более 8 МБ).");

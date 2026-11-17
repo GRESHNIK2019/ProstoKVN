@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -8,9 +8,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
-    <Version>0.33.0</Version>
-    <AssemblyVersion>0.33.0.0</AssemblyVersion>
-    <FileVersion>0.33.0.0</FileVersion>
+    <Version>0.34.2</Version>
+    <AssemblyVersion>0.34.2.0</AssemblyVersion>
+    <FileVersion>0.34.2.0</FileVersion>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <ApplicationIcon>Assets\ProstoKVN.ico</ApplicationIcon>

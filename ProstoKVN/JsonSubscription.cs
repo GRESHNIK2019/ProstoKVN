@@ -121,7 +121,7 @@ public static class JsonSubscription
             n.Values["password"] = Str(settings, "password", Str(endpoint, "password"));
         }
         string security = Str(stream, "security");
-        if (security is "tls" or "reality" && protocol is "vless" or "vmess")
+        if (security is "tls" or "reality" && protocol is "vless" or "vmess" or "trojan")
         {
             n.Values["tls"] = true;
             var tls = Prop(stream, security == "reality" ? "realitySettings" : "tlsSettings");
@@ -140,6 +140,7 @@ public static class JsonSubscription
             }
         }
         string network = Str(stream, "network", "tcp");
+        if (protocol == "hysteria2") n.Values["network"] = "hysteria";
         if (network is "ws" or "grpc" or "xhttp")
         {
             n.Values["network"] = network;

@@ -12,8 +12,9 @@ namespace ProstoKVN;
 /// </summary>
 public static class SubscriptionImporter
 {
+    public const int MaxServersPerSubscription = 100;
     public sealed record Result(string SubscriptionUrl, List<ProxyNode> Nodes,
-        string Summary, string DetectedFormat = "auto");
+        string Summary, string DetectedFormat = "auto", bool ServerLimitReached = false);
 
     public static bool IsValidUrl(string input)
     {
@@ -53,6 +54,7 @@ public static class SubscriptionImporter
             var single = SubscriptionReader.ParseContent(url).Nodes;
             if (single.Count != 1 || single[0].Values["type"]?.ToString() != "vless")
                 throw new InvalidOperationException("Некорректная VLESS-ссылка.");
+            SubscriptionAccessException.CheckPlaceholderNodes(single);
             return new(url, single, "1 сервер • VLESS", "VLESS");
         }
         string[] endpoints = format == "auto" && Alternate3xEndpoint(url) is string alt
@@ -60,24 +62,54 @@ public static class SubscriptionImporter
         var nodes = new List<ProxyNode>();
         var formats = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        bool limitReached = false;
         foreach (string endpoint in endpoints.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             try
             {
                 string content = await SubscriptionTransport.GetStringAsync(endpoint);
+                // HWID-enabled Remnawave subscriptions expose native Xray JSON
+                // at /json. Keep this client's own UA and the same device ID.
+                var uri = new Uri(endpoint);
+                if (format is "auto" or "xray" && SubscriptionTransport.RequiresHardwareIdentity(endpoint)
+                    && uri.AbsolutePath.Trim('/').Split('/').Length == 1
+                    && !uri.AbsolutePath.EndsWith("/json", StringComparison.OrdinalIgnoreCase)
+                    && !content.TrimStart().StartsWith("[") && !content.TrimStart().StartsWith("{"))
+                {
+                    var jsonUri = new UriBuilder(uri) { Path = uri.AbsolutePath.TrimEnd('/') + "/json" };
+                    try
+                    {
+                        string native = await SubscriptionTransport.GetStringAsync(jsonUri.Uri.AbsoluteUri);
+                        if (native.TrimStart().StartsWith("[") || native.TrimStart().StartsWith("{"))
+                        {
+                            var nativeParsed = UniversalSubscriptionParser.Parse(native, "xray");
+                            if (nativeParsed.Nodes.Count > 0) content = native;
+                        }
+                    }
+                    catch (SubscriptionAccessException) { throw; }
+                    catch (Exception) { /* Keep a usable base subscription if /json is unavailable. */ }
+                }
                 var parsed = UniversalSubscriptionParser.Parse(content, format);
+                SubscriptionAccessException.CheckPlaceholderNodes(parsed.Nodes);
                 formats.Add(parsed.Format);
                 foreach (var node in parsed.Nodes)
                 {
-                    if (nodes.Count >= UniversalSubscriptionParser.MaxNodes) break;
-                    if (keys.Add(Key(node))) nodes.Add(node);
+                    if (!keys.Add(NodeKey(node))) continue;
+                    if (nodes.Count >= MaxServersPerSubscription)
+                    {
+                        limitReached = true;
+                        break;
+                    }
+                    nodes.Add(node);
                 }
             }
+            catch (SubscriptionAccessException) { throw; }
             catch (Exception) // One valid endpoint is sufficient for 3x-ui.
             {
                 if (endpoints.Length == 1) throw new InvalidOperationException(
                     "Подписка недоступна или не содержит совместимых серверов. Проверь HTTPS-ссылку и формат.");
             }
+            if (limitReached) break;
         }
         if (nodes.Count == 0)
             throw new InvalidOperationException(
@@ -91,14 +123,18 @@ public static class SubscriptionImporter
             node.Values["name"] = node.Name;
         }
         string detected = string.Join(" + ", formats.OrderBy(x => x));
-        return new(url, nodes, $"{nodes.Count} серверов • {detected}", detected);
+        return new(url, nodes, $"{nodes.Count} серверов • {detected}"
+            + (limitReached ? $" • добавлены первые {MaxServersPerSubscription}" : ""), detected, limitReached);
     }
 
-    private static string Key(ProxyNode node)
+    internal static string NodeKey(ProxyNode node)
     {
         string Read(string key) => node.Values.TryGetValue(key, out var v)
             ? Convert.ToString(v) ?? "" : "";
+        string native = string.IsNullOrWhiteSpace(node.NativeXrayConfig) ? ""
+            : node.Name + "|" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(node.NativeXrayConfig)));
         return string.Join("|", Read("type"), Read("server"), Read("port"), Read("uuid"),
-            Read("password"), Read("network"), Read("servername"));
+            Read("password"), Read("network"), Read("servername"), native);
     }
 }

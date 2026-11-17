@@ -62,7 +62,7 @@ public sealed class VpnCore : IDisposable
         if (!RouteTarget.TryParse(value, out var target)) return -1;
         return target.Priority;
     }
-    public static Dictionary<string, object?> BuildConfig(IReadOnlyList<ProxyNode> nodes, IEnumerable<RouteRule> routeRules, AppSettings settings, bool useXraySidecar = false, bool useSingBoxSidecar = false, bool hotRules = false)
+    public static Dictionary<string, object?> BuildConfig(IReadOnlyList<ProxyNode> nodes, IEnumerable<RouteRule> routeRules, AppSettings settings, bool useXraySidecar = false, bool useSingBoxSidecar = false, bool hotRules = false, HotRulePlan? preparedHotRules = null)
     {
         var rules = new List<string>
         {
@@ -100,12 +100,15 @@ public sealed class VpnCore : IDisposable
         bool enableIpv6 = settings.Mode != "direct" && routeRules.Any(r =>
             r.Manual && RouteTarget.TryParse(r.Domain, out var t)
             && t.Kind is RouteTargetKind.IPv6 or RouteTargetKind.IPv6Subnet);
-        if (hotRules && settings.Mode != "direct")
+        var hotPlan = hotRules && settings.Mode != "direct"
+            ? preparedHotRules ?? HotRuleProviders.Create(nodes, routeRules.ToList(), settings) : null;
+        if (hotPlan != null)
         {
-            var plan = HotRuleProviders.Create(nodes, routeRules.ToList(), settings);
-            rules.AddRange(plan.Rules.Take(plan.ManualRuleCount));
-            rules.AddRange(DiscordRouting.BuildRules());
-            rules.AddRange(plan.Rules.Skip(plan.ManualRuleCount));
+            rules.AddRange(hotPlan.Rules.Take(hotPlan.ManualRuleCount));
+            rules.AddRange(settings.Mode == "apps"
+                ? DiscordRouting.BuildRules().Where(rule => rule.StartsWith("PROCESS-NAME,", StringComparison.Ordinal))
+                : DiscordRouting.BuildRules());
+            rules.AddRange(hotPlan.Rules.Skip(hotPlan.ManualRuleCount));
         }
         else if (settings.Mode != "direct")
         {
@@ -138,7 +141,9 @@ public sealed class VpnCore : IDisposable
             // IP-only WebRTC voice/video UDP uses VPN instead of smart-mode DIRECT.
             // Auto-learned HTTP domain routes cannot override this media policy.
             AddUserRules(manualRules);
-            rules.AddRange(DiscordRouting.BuildRules());
+            rules.AddRange(settings.Mode == "apps"
+                ? DiscordRouting.BuildRules().Where(rule => rule.StartsWith("PROCESS-NAME,", StringComparison.Ordinal))
+                : DiscordRouting.BuildRules());
             AddUserRules(autoRules);
         }
         // Dedicated AI service domains must use VPN on the very first request,
@@ -153,7 +158,7 @@ public sealed class VpnCore : IDisposable
         // Telegram desktop uses IP-only MTProto sessions. Domain-only training
         // never sees those destinations, so route by process and official DC CIDRs.
         // Explicit manual domain rules remain above the built-in Telegram rules.
-        if (settings.Mode != "direct") rules.AddRange(TelegramRouting.BuildRules());
+        if (settings.Mode is "smart" or "vpn") rules.AddRange(TelegramRouting.BuildRules());
         rules.Add("MATCH," + (settings.Mode == "vpn" ? "VEGA" : "DIRECT"));
         var names = nodes.Select(n => n.Name).ToArray();
         var selected = names.Contains(settings.SelectedNode) ? settings.SelectedNode : names.First();
@@ -215,8 +220,8 @@ public sealed class VpnCore : IDisposable
             })).ToArray(),
             ["rules"] = rules
         };
-        if (hotRules && settings.Mode != "direct")
-            result["rule-providers"] = HotRuleProviders.Create(nodes, routeRules.ToList(), settings).Providers;
+        if (hotPlan != null)
+            result["rule-providers"] = hotPlan.Providers;
         return result;
     }
     public async Task StartAsync(IReadOnlyList<ProxyNode> nodes, List<RouteRule> rules, AppSettings settings)
@@ -238,7 +243,7 @@ public sealed class VpnCore : IDisposable
         var config = BuildConfig(nodes, rules, settings,
             useXraySidecar: activeEngine == TunnelEngine.Xray,
             useSingBoxSidecar: activeEngine == TunnelEngine.SingBox,
-            hotRules: lastHotPlan != null);
+            hotRules: lastHotPlan != null, preparedHotRules: lastHotPlan);
         config["secret"] = secret;
         string initialConfig = YamlWriter.Serialize(config);
         File.WriteAllText(UserStore.ConfigPath, initialConfig);
@@ -342,11 +347,11 @@ public sealed class VpnCore : IDisposable
         // Only rule-provider files change. Mihomo's TUN, sockets and active
         // proxy connections stay alive; no PUT /configs?force=true on routine edits.
         var next = settings.Mode == "direct" ? null
-            : HotRuleProviders.Create(nodes, rules, settings);
+            : HotRuleProviders.Create(nodes, rules, settings, previousPlan: lastHotPlan);
         var config = BuildConfig(nodes, rules, settings,
             useXraySidecar: activeEngine == TunnelEngine.Xray,
             useSingBoxSidecar: activeEngine == TunnelEngine.SingBox,
-            hotRules: next != null);
+            hotRules: next != null, preparedHotRules: next);
         config["secret"] = secret;
         string payload = YamlWriter.Serialize(config);
         if (payload != lastAppliedConfig || lastHotPlan == null || next == null)
@@ -457,9 +462,9 @@ public sealed class VpnCore : IDisposable
         }
         if (effectiveRule == null)
         {
-            if (TelegramRouting.IsTelegramAddress(destinationIp)
+            if (mode != "apps" && (TelegramRouting.IsTelegramAddress(destinationIp)
                 || TelegramRouting.IsTelegramAddress(host)
-                || TelegramRouting.IsTelegramProcess(processName))
+                || TelegramRouting.IsTelegramProcess(processName)))
                 return chains.Any(x => x.Equals("DIRECT", StringComparison.OrdinalIgnoreCase));
             return false;
         }

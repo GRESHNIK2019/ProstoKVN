@@ -6,25 +6,26 @@ using System.Text;
 
 namespace ProstoKVN;
 
-// Fixed rule-set slots allow ordered, destination-aware updates without
-// reloading Mihomo's TUN, DNS, listeners or proxy sessions.
+// Reuse rule-set slots for routine updates without reloading TUN or listeners.
+// Independent matches can share a run; overlapping matches retain their order.
 public sealed class HotRulePlan
 {
     public Dictionary<string, object?> Providers { get; } = new();
     public List<string> Rules { get; } = new();
     public int ManualRuleCount { get; set; }
     public Dictionary<string, string> Files { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, int> PhaseSlots { get; } = new(StringComparer.Ordinal);
 }
 
 public static class HotRuleProviders
 {
-    private const int SlotsPerPhase = 16;
+    private const int InitialSlotsPerPhase = 16;
     private static readonly string[] BaseTargets = { "DIRECT", "VEGA", "REJECT" };
     private static string Name(string phase, int slot, int target) =>
         $"vega-{phase}-{slot:00}-{target:00}";
 
     public static HotRulePlan Create(IReadOnlyList<ProxyNode> nodes,
-        IReadOnlyList<RouteRule> routeRules, AppSettings settings)
+        IReadOnlyList<RouteRule> routeRules, AppSettings settings, HotRulePlan? previousPlan = null)
     {
         var plan = new HotRulePlan();
         var chosen = nodes.FirstOrDefault(x => x.Name == settings.SelectedNode) ?? nodes[0];
@@ -63,25 +64,37 @@ public static class HotRuleProviders
                 .Select(r => (rule: r, target: Target(r)))
                 .Where(item => RouteTarget.TryParse(item.rule.Domain, out _))
                 .ToList();
-            var runs = new List<(string target, List<string> patterns)>();
+            var runs = new List<(string target, List<string> patterns, List<RouteTarget> matches)>();
             foreach (var item in ordered)
             {
-                if (runs.Count == 0 || runs[^1].target != item.target)
-                    runs.Add((item.target, new List<string>()));
                 RouteTarget.TryParse(item.rule.Domain, out var parsed);
+                int destination = -1;
+                for (int i = runs.Count - 1; i >= 0; i--)
+                {
+                    if (runs[i].target == item.target) { destination = i; break; }
+                    // Moving this rule before a conflicting outbound would
+                    // change which route wins. Unknown intersections count as conflicts.
+                    if (runs[i].matches.Any(other => MayOverlap(parsed, other))) break;
+                }
+                if (destination < 0)
+                {
+                    destination = runs.Count;
+                    runs.Add((item.target, new List<string>(), new List<RouteTarget>()));
+                }
                 // A classical provider owns the MATCHING CONDITION only;
                 // the RULE-SET declaration supplies the outbound.
-                string text = parsed.ToRule(item.target);
-                int lastComma = text.LastIndexOf(',');
-                if (text.EndsWith(",no-resolve", StringComparison.Ordinal))
-                    text = text[..text.LastIndexOf(',', text.LastIndexOf(',') - 1)] + ",no-resolve";
-                else text = text[..lastComma];
-                runs[^1].patterns.Add(text);
+                string text = parsed.MihomoType + "," + parsed.MihomoValue
+                    + (parsed.IsDomain || parsed.IsApplication ? "" : ",no-resolve");
+                runs[destination].patterns.Add(text);
+                runs[destination].matches.Add(parsed);
             }
-            if (runs.Count > SlotsPerPhase)
-                throw new InvalidOperationException($"Слишком много групп {phase}: {runs.Count} (лимит {SlotsPerPhase}).");
+            int slots = InitialSlotsPerPhase;
+            if (previousPlan != null && previousPlan.PhaseSlots.TryGetValue(phase, out int previousSlots))
+                slots = Math.Max(slots, previousSlots);
+            while (slots < runs.Count) slots = checked(slots * 2);
+            plan.PhaseSlots[phase] = slots;
 
-            for (int slot = 0; slot < SlotsPerPhase; slot++)
+            for (int slot = 0; slot < slots; slot++)
             {
                 for (int t = 0; t < targets.Length; t++)
                 {
@@ -101,6 +114,25 @@ public static class HotRuleProviders
             if (phase == "manual") plan.ManualRuleCount = plan.Rules.Count;
         }
         return plan;
+    }
+
+    private static bool MayOverlap(RouteTarget left, RouteTarget right)
+    {
+        if (left.IsDomain && right.IsDomain)
+            return left.Matches(right.Value, null) || right.Matches(left.Value, null);
+        if (left.IsApplication && right.IsApplication)
+        {
+            if (left.Kind == RouteTargetKind.ProcessName)
+                return left.Matches(null, null, right.DisplayValue);
+            if (right.Kind == RouteTargetKind.ProcessName)
+                return right.Matches(null, null, left.DisplayValue);
+            return left.DisplayValue.Equals(right.DisplayValue, StringComparison.OrdinalIgnoreCase);
+        }
+        if (!left.IsDomain && !left.IsApplication && !right.IsDomain && !right.IsApplication)
+            return left.Matches(null, right.Value.Split('/')[0])
+                || right.Matches(null, left.Value.Split('/')[0]);
+        // A process can access any destination; domains can resolve to any IP.
+        return true;
     }
 
     public static string Render(IEnumerable<string> patterns)

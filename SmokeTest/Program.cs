@@ -4,6 +4,36 @@ using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using ProstoKVN;
+if (Environment.GetEnvironmentVariable("PROSTOKVN_LAYOUT_BASELINE") == "1")
+{
+    LayoutRedesignTests.RunBaseline();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_LAYOUT_REDESIGN_TEST") == "1")
+{
+    LayoutRedesignTests.Run();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_SERVER_LATENCY_TEST") == "1")
+{
+    await ServerLatencyTests.RunAsync();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_PROVIDER_FORMAT_TEST") == "1")
+{
+    await ProviderFormatTests.RunAsync();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_HOT_RULE_CAPACITY_TEST") == "1")
+{
+    await HotRuleCapacityTests.RunAsync();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_SUBSCRIPTION_LIMIT_TEST") == "1")
+{
+    await SubscriptionLimitTests.RunAsync();
+    return;
+}
 if (Environment.GetEnvironmentVariable("PROSTOKVN_APPLICATION_ROUTE_TEST") == "1")
 {
     await ApplicationRoutingTests.RunAsync();
@@ -106,6 +136,16 @@ if (Environment.GetEnvironmentVariable("PROSTOKVN_COMPACT_UI_TEST") == "1")
 if (Environment.GetEnvironmentVariable("PROSTOKVN_V025_TEST") == "1")
 {
     await Version025Tests.RunAsync();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_RULE_CATEGORY_TEST") == "1")
+{
+    RuleCategoriesTests.Run();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_SPLIT_TUN_TEST") == "1")
+{
+    SplitRoutingTests.Run();
     return;
 }
 if (Environment.GetEnvironmentVariable("PROSTOKVN_DISCORD_TEST") == "1")

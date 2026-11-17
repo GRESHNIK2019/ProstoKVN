@@ -26,9 +26,11 @@ public static class SubscriptionCache
         if (!SubscriptionImporter.IsValidUrl(url) || nodes.Count == 0) return false;
         try
         {
+            SubscriptionAccessException.CheckPlaceholderNodes(nodes);
             UserStore.EnsureHome();
             Directory.CreateDirectory(MultiCacheDir);
-            byte[] plain = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(nodes));
+            byte[] plain = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
+                nodes.Take(SubscriptionImporter.MaxServersPerSubscription).ToList()));
             byte[] encrypted = ProtectedData.Protect(plain, null, DataProtectionScope.CurrentUser);
             var envelope = new Envelope(Fingerprint(url), DateTime.UtcNow,
                 Convert.ToBase64String(encrypted));
@@ -69,6 +71,7 @@ public static class SubscriptionCache
                 using var data = JsonDocument.Parse(plain);
                 foreach (var item in data.RootElement.EnumerateArray())
                 {
+                    if (nodes.Count >= SubscriptionImporter.MaxServersPerSubscription) break;
                     if (!item.TryGetProperty("Name", out var name) ||
                         !item.TryGetProperty("Values", out var values)
                         || values.ValueKind != JsonValueKind.Object) continue;
@@ -87,6 +90,7 @@ public static class SubscriptionCache
             }
             finally { CryptographicOperations.ZeroMemory(plain); }
             if (nodes.Count == 0) return false;
+            SubscriptionAccessException.CheckPlaceholderNodes(nodes);
             savedUtc = envelope.SavedUtc;
             return true;
         }
