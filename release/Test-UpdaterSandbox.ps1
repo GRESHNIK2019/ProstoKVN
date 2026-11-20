@@ -1,4 +1,5 @@
-﻿$ErrorActionPreference = 'Stop'
+﻿param([string]$HelperPath = '')
+$ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $dev = Join-Path $env:TEMP ('ProstoKVN-updater-fixture-'+[guid]::NewGuid().ToString('N'))
 $publish = Join-Path $dev 'publish'
@@ -17,7 +18,7 @@ foreach($f in Get-ChildItem $payload -File) {
  $manifest[$f.Name] = (Get-FileHash $f.FullName -Algorithm SHA256).Hash
 }
 $manifest | ConvertTo-Json -Compress | Set-Content -Path (Join-Path $stage 'hashes.json') -Encoding utf8
-$helper = Join-Path $root 'Updater\bin\Release\net10.0-windows\win-x64\ProstoKVN.Updater.exe'
+$helper = if ($HelperPath) { $HelperPath } else { Join-Path $root 'Updater\bin\Release\net10.0-windows\win-x64\ProstoKVN.Updater.exe' }
 if (-not (Test-Path $helper)) { throw 'Updater executable not found' }
 # A fake standalone application is updated in %TEMP%, never the live ProstoKVN.
 $arguments = @('--replace', ('"'+$stage+'"'), ('"'+$target+'"'), '999999')

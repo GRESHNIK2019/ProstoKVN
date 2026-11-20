@@ -51,6 +51,7 @@ public sealed class ProxyNode : System.ComponentModel.INotifyPropertyChanged
 }
 public sealed class RouteRule
 {
+    public RouteRule Snapshot() => (RouteRule)MemberwiseClone();
     public string Domain { get; set; } = "";
     // Optional user-defined name, e.g. Telegram, Hetzner, work subnet.
     public string Label { get; set; } = "";
@@ -61,6 +62,14 @@ public sealed class RouteRule
     public string Route { get; set; } = "DIRECT";
     public string PreferredNode { get; set; } = "";
     public bool Manual { get; set; }
+    // Visible, editable preset rules follow the user's own exceptions.
+    public string Preset { get; set; } = "";
+    // Explicit user selection for the 'Only my rules' mode.
+    // null means an older record: legacy Manual rules remain included,
+    // and automatically generated records remain excluded.
+    public bool? MyRuleEnabled { get; set; }
+    [JsonIgnore]
+    public bool IncludedInMine => MyRuleEnabled ?? Manual;
     public bool Provisional { get; set; }
     public DateTime? ExpiresUtc { get; set; }
     public DateTime UpdatedUtc { get; set; } = DateTime.UtcNow;
@@ -68,9 +77,21 @@ public sealed class RouteRule
     [JsonIgnore]
     public string DisplaySummary => (Route == "VEGA" ? "Через VPN"
         : Route == "REJECT" ? "Блокировать" : "Напрямую")
+        + (RouteTarget.TryParse(Domain, out var scope) && scope.IsDomain
+            ? scope.Kind == RouteTargetKind.DomainExact ? " · Только этот адрес"
+                : " · Весь домен и поддомены" : "")
         + (string.IsNullOrWhiteSpace(PreferredNode) ? "" : " · " + PreferredNode)
-        + " · " + (Manual ? "Добавлено вами" : "Автоматическое правило")
+        + " · " + (!string.IsNullOrEmpty(Preset) ? "Набор: " + Preset : Manual ? "Ручное правило" : "Автоматическое правило")
+        + (IncludedInMine ? " · Только выбранное: да" : " · Только выбранное: нет")
         + (string.IsNullOrWhiteSpace(Label) ? "" : " · " + Label);
+    [JsonIgnore]
+    public string RouteCaption => Route == "VEGA" ? "VPN" : Route == "REJECT" ? "Блокировать" : "Напрямую";
+    [JsonIgnore]
+    public string CompactSummary => (RouteTarget.TryParse(Domain, out var t) ? t.DisplayKind : "Правило")
+        + (string.IsNullOrWhiteSpace(Label) ? "" : " · " + Label)
+        + (string.IsNullOrWhiteSpace(PreferredNode) ? "" : " · " + PreferredNode)
+        + (!string.IsNullOrEmpty(Preset) ? " · Набор правил" : !Manual ? " · Автоматическое" : "")
+        + (!IncludedInMine ? " · Не включено в «Только выбранное»" : "");
     public override string ToString()
     {
         string kind = RouteTarget.TryParse(Domain, out var target) ? target.DisplayKind : "Домен";
@@ -83,12 +104,17 @@ public sealed class AppSettings
 {
     public string Mode { get; set; } = "smart";
     public bool Tun { get; set; }
+    // TunStack and the advanced toggles are independent from routing mode.
+    // Old settings.json files retain compatible Mihomo defaults.
+    public string TunStack { get; set; } = "mixed";
+    public bool TunDnsHijack { get; set; } = true;
+    public bool TunStrictRoute { get; set; }
     public bool AutoLearn { get; set; } = true;
     public string SelectedNode { get; set; } = "";
     public string ProtectedUrl { get; set; } = "";
     public string Theme { get; set; } = "light";
 }
-public static class UserStore
+public static partial class UserStore
 {
     // An isolated data directory can be supplied for GUI smoke tests so
     // an already running VPN session never shares the test's routes.json.

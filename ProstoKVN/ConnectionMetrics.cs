@@ -8,7 +8,9 @@ namespace ProstoKVN;
 public sealed record MonitorSnapshot(
     int UdpConnections, int DiscordUdpConnections,
     long UdpUpBytesPerSecond, long UdpDownBytesPerSecond,
-    int? HttpsLatencyMs);
+    int? HttpsLatencyMs,
+    int DiscordVpnUdpConnections = 0, int DiscordDirectUdpConnections = 0,
+    int DiscordUnknownUdpConnections = 0);
 
 public sealed class ConnectionMetrics
 {
@@ -19,7 +21,7 @@ public sealed class ConnectionMetrics
         using var doc = JsonDocument.Parse(json);
         var next = new Dictionary<string, (long up, long down)>();
         long upDiff = 0, downDiff = 0;
-        int udp = 0, discord = 0;
+        int udp = 0, discord = 0, discordVpn = 0, discordDirect = 0, discordUnknown = 0;
         var elapsed = previousAt.HasValue
             ? Math.Max(1, (now - previousAt.Value).TotalSeconds) : 0;
         if (doc.RootElement.TryGetProperty("connections", out var connections)
@@ -31,7 +33,23 @@ public sealed class ConnectionMetrics
                 string network = GetString(meta, "network");
                 if (!network.Equals("udp", StringComparison.OrdinalIgnoreCase)) continue;
                 udp++;
-                if (DiscordRouting.IsDiscordProcess(GetString(meta, "process"))) discord++;
+                if (DiscordRouting.IsDiscordProcess(GetString(meta, "process")))
+                {
+                    discord++;
+                    if (item.TryGetProperty("chains", out var chain)
+                        && chain.ValueKind == JsonValueKind.Array)
+                    {
+                        var hops = chain.EnumerateArray()
+                            .Where(x => x.ValueKind == JsonValueKind.String)
+                            .Select(x => x.GetString() ?? "").ToArray();
+                        bool direct = hops.Contains("DIRECT", StringComparer.OrdinalIgnoreCase);
+                        bool vpn = hops.Contains("VEGA", StringComparer.OrdinalIgnoreCase);
+                        if (vpn && !direct) discordVpn++;
+                        else if (direct && !vpn) discordDirect++;
+                        else discordUnknown++;
+                    }
+                    else discordUnknown++;
+                }
                 string id = GetString(item, "id");
                 if (id.Length == 0) continue;
                 long up = GetLong(item, "upload"), down = GetLong(item, "download");
@@ -48,7 +66,8 @@ public sealed class ConnectionMetrics
         previousAt = now;
         return new MonitorSnapshot(udp, discord,
             elapsed > 0 ? (long)(upDiff / elapsed) : 0,
-            elapsed > 0 ? (long)(downDiff / elapsed) : 0, latency);
+            elapsed > 0 ? (long)(downDiff / elapsed) : 0, latency,
+            discordVpn, discordDirect, discordUnknown);
     }
     public void Reset() { prior.Clear(); previousAt = null; }
     private static string GetString(JsonElement obj, string key) =>

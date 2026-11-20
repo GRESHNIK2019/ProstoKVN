@@ -8,6 +8,7 @@ using System.Net;
 using System.Net.Http;
 using System.Security.Principal;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace ProstoKVN;
@@ -23,13 +24,16 @@ public sealed class VpnCore : IDisposable
     private readonly string secret = Guid.NewGuid().ToString("N");
     private string? lastAppliedConfig;
     private HotRulePlan? lastHotPlan;
-    public VpnCore()
+    private readonly int controllerPort;
+    public VpnCore(int controllerPort = ApiPort, HttpMessageHandler? apiHandler = null)
     {
+        if (controllerPort is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(controllerPort));
+        this.controllerPort = controllerPort;
+        api = new HttpClient(apiHandler ?? new HttpClientHandler()) { Timeout = TimeSpan.FromSeconds(7) };
         xray.OnLog += line => OnLog?.Invoke(line);
         singBox.OnLog += line => OnLog?.Invoke(line);
     }
-    private static bool WantsXray(ProxyNode? node) => node != null && EngineSelector.Choose(node) == TunnelEngine.Xray;
-    private readonly HttpClient api = new() { Timeout = TimeSpan.FromSeconds(7) };
+    private readonly HttpClient api;
     private bool proxyChanged;
     public bool IsRunning => process is { HasExited: false };
     public bool IsTransportHealthy => IsRunning
@@ -57,13 +61,14 @@ public sealed class VpnCore : IDisposable
         return domain.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-')
             && domain.Split('.').All(label => label.Length is > 0 and <= 63 && label[0] != '-' && label[^1] != '-');
     }
-    private static int RulePriority(string value)
-    {
-        if (!RouteTarget.TryParse(value, out var target)) return -1;
-        return target.Priority;
-    }
+    public static string NormalizeTunStack(string? stack)
+        => stack is "system" or "gvisor" ? stack : "mixed";
+
     public static Dictionary<string, object?> BuildConfig(IReadOnlyList<ProxyNode> nodes, IEnumerable<RouteRule> routeRules, AppSettings settings, bool useXraySidecar = false, bool useSingBoxSidecar = false, bool hotRules = false, HotRulePlan? preparedHotRules = null)
     {
+        if (nodes.Count == 0) throw new InvalidOperationException("Нет доступных серверов.");
+        settings = RoutingPolicy.Snapshot(settings);
+        routeRules = routeRules.ToList();
         var rules = new List<string>
         {
             "IN-NAME,vega-probe-direct,DIRECT",
@@ -97,43 +102,29 @@ public sealed class VpnCore : IDisposable
         var chosenNode = nodes.FirstOrDefault(x => x.Name == settings.SelectedNode) ?? nodes[0];
         // IPv6 traffic is enabled only if the user explicitly adds an IPv6
         // address/network exception. Existing IPv4-only installations stay unchanged.
-        bool enableIpv6 = settings.Mode != "direct" && routeRules.Any(r =>
-            r.Manual && RouteTarget.TryParse(r.Domain, out var t)
+        bool enableIpv6 = RoutingPolicy.Select(routeRules, settings.Mode, true).Any(r =>
+            RouteTarget.TryParse(r.Domain, out var t)
             && t.Kind is RouteTargetKind.IPv6 or RouteTargetKind.IPv6Subnet);
         var hotPlan = hotRules && settings.Mode != "direct"
             ? preparedHotRules ?? HotRuleProviders.Create(nodes, routeRules.ToList(), settings) : null;
         if (hotPlan != null)
         {
             rules.AddRange(hotPlan.Rules.Take(hotPlan.ManualRuleCount));
-            rules.AddRange(settings.Mode == "apps"
-                ? DiscordRouting.BuildRules().Where(rule => rule.StartsWith("PROCESS-NAME,", StringComparison.Ordinal))
-                : DiscordRouting.BuildRules());
+            rules.AddRange(RoutingPolicy.DiscordRules(settings.Mode));
             rules.AddRange(hotPlan.Rules.Skip(hotPlan.ManualRuleCount));
         }
         else if (settings.Mode != "direct")
         {
             // User exceptions always precede auto-learning, Telegram networks and MATCH.
             // Exact addresses precede CIDRs; more-specific networks precede broad ones.
-            var manualRules = routeRules.Where(x => x.Manual)
-                .OrderByDescending(x => RulePriority(x.Domain))
-                .ToList();
-            var autoRules = settings.Mode == "smart"
-                ? routeRules.Where(x => !x.Manual && (x.Route == "VEGA" || x.Route == "DIRECT")
-                    && !RuDomainPolicy.IsRuDomain(x.Domain))
-                .OrderByDescending(x => RulePriority(x.Domain))
-                : Enumerable.Empty<RouteRule>();
+            var manualRules = RoutingPolicy.Select(routeRules, settings.Mode, manual: true);
+            var autoRules = RoutingPolicy.Select(routeRules, settings.Mode, manual: false);
             void AddUserRules(IEnumerable<RouteRule> source)
             {
                 foreach (var r in source)
                 {
                     if (!RouteTarget.TryParse(r.Domain, out var routeTarget)) continue;
-                    string target = r.Route == "REJECT" ? "REJECT" : r.Route == "VEGA" ? "VEGA" : "DIRECT";
-                    if (target == "VEGA" && !string.IsNullOrEmpty(r.PreferredNode))
-                    {
-                        var preferred = nodes.FirstOrDefault(n => n.Name == r.PreferredNode);
-                        if (preferred != null && (preferred.Name == chosenNode.Name || !WantsXray(preferred)))
-                            target = preferred.Name;
-                    }
+                    string target = RoutingPolicy.Target(r, nodes, settings);
                     rules.Add(routeTarget.ToRule(target));
                 }
             }
@@ -141,9 +132,7 @@ public sealed class VpnCore : IDisposable
             // IP-only WebRTC voice/video UDP uses VPN instead of smart-mode DIRECT.
             // Auto-learned HTTP domain routes cannot override this media policy.
             AddUserRules(manualRules);
-            rules.AddRange(settings.Mode == "apps"
-                ? DiscordRouting.BuildRules().Where(rule => rule.StartsWith("PROCESS-NAME,", StringComparison.Ordinal))
-                : DiscordRouting.BuildRules());
+            rules.AddRange(RoutingPolicy.DiscordRules(settings.Mode));
             AddUserRules(autoRules);
         }
         // Dedicated AI service domains must use VPN on the very first request,
@@ -175,12 +164,12 @@ public sealed class VpnCore : IDisposable
             ["secret"] = "runtime-only",
             ["tun"] = new Dictionary<string, object?>
             {
-                ["enable"] = settings.Tun,
-                ["stack"] = "mixed",
-                ["auto-route"] = settings.Tun,
+                ["enable"] = settings.Tun || RoutingPolicy.RequiresTun(settings.Mode),
+                ["stack"] = NormalizeTunStack(settings.TunStack),
+                ["auto-route"] = settings.Tun || RoutingPolicy.RequiresTun(settings.Mode),
                 ["auto-detect-interface"] = true,
-                ["dns-hijack"] = new[] { "any:53" },
-                ["strict-route"] = false
+                ["dns-hijack"] = settings.TunDnsHijack ? new[] { "any:53" } : Array.Empty<string>(),
+                ["strict-route"] = settings.TunStrictRoute
             },
             ["dns"] = new Dictionary<string, object?>
             {
@@ -217,7 +206,12 @@ public sealed class VpnCore : IDisposable
             }.Concat(probeGroups.Select((alias, index) => (object)new Dictionary<string, object?>
             {
                 ["name"] = alias, ["type"] = "select", ["proxies"] = new[] { nodes[index].Name }
-            })).ToArray(),
+            })).Concat(nodes.Select((node, index) => (node, index))
+                .Where(x => RoutingPolicy.NodeTarget(nodes, x.index) != x.node.Name)
+                .Select(x => (object)new Dictionary<string, object?> {
+                    ["name"] = RoutingPolicy.NodeTarget(nodes, x.index), ["type"] = "select",
+                    ["proxies"] = new[] { x.node.Name }
+                })).ToArray(),
             ["rules"] = rules
         };
         if (hotPlan != null)
@@ -226,9 +220,11 @@ public sealed class VpnCore : IDisposable
     }
     public async Task StartAsync(IReadOnlyList<ProxyNode> nodes, List<RouteRule> rules, AppSettings settings)
     {
+        settings = RoutingPolicy.Snapshot(settings);
+        rules = rules.Select(r => r.Snapshot()).ToList();
         if (nodes.Count == 0) throw new InvalidOperationException("Нет доступных серверов.");
         if (!File.Exists(CoreExecutable)) throw new FileNotFoundException("Не найдено сетевое ядро Mihomo.", CoreExecutable);
-        if (settings.Tun && !IsAdmin()) throw new InvalidOperationException("Для TUN запусти ProstoKVN от имени администратора.");
+        if ((settings.Tun || RoutingPolicy.RequiresTun(settings.Mode)) && !IsAdmin()) throw new InvalidOperationException("Для TUN запусти ProstoKVN от имени администратора.");
         Stop();
         try
         {
@@ -245,6 +241,7 @@ public sealed class VpnCore : IDisposable
             useSingBoxSidecar: activeEngine == TunnelEngine.SingBox,
             hotRules: lastHotPlan != null, preparedHotRules: lastHotPlan);
         config["secret"] = secret;
+        config["external-controller"] = $"127.0.0.1:{controllerPort}";
         string initialConfig = YamlWriter.Serialize(config);
         File.WriteAllText(UserStore.ConfigPath, initialConfig);
         var sanity = Process.Start(new ProcessStartInfo(CoreExecutable)
@@ -278,7 +275,7 @@ public sealed class VpnCore : IDisposable
         await Task.Delay(1300);
         if (process.HasExited) throw new InvalidOperationException("Сетевое ядро завершилось при запуске — смотри журнал.");
         lastAppliedConfig = initialConfig;
-        if (!settings.Tun && settings.Mode != "direct") EnableSystemProxy();
+        if (!settings.Tun && !RoutingPolicy.RequiresTun(settings.Mode) && settings.Mode != "direct") EnableSystemProxy();
         OnLog?.Invoke("ProstoKVN запущен. Режим: " + settings.Mode + (settings.Tun ? " (TUN)" : " (системный прокси)"));
         }
         catch
@@ -320,7 +317,7 @@ public sealed class VpnCore : IDisposable
     public async Task<List<string>> ActiveDomainsAsync()
     {
         if (!IsRunning) return new();
-        using var req = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{ApiPort}/connections");
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{controllerPort}/connections");
         req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + secret);
         using var resp = await api.SendAsync(req);
         resp.EnsureSuccessStatusCode();
@@ -341,9 +338,12 @@ public sealed class VpnCore : IDisposable
         }
         return set.Take(128).ToList();
     }
-    public async Task ReloadRoutesAsync(IReadOnlyList<ProxyNode> nodes, List<RouteRule> rules, AppSettings settings)
+    public async Task<RouteReloadResult> ReloadRoutesAsync(IReadOnlyList<ProxyNode> nodes, List<RouteRule> rules, AppSettings settings)
     {
-        if (!IsRunning) return;
+        if (!IsRunning) return RouteReloadResult.Stopped;
+        settings = RoutingPolicy.Snapshot(settings);
+        rules = rules.Select(r => r.Snapshot()).ToList();
+        if (settings.Mode == "direct" && lastHotPlan == null) return RouteReloadResult.Unchanged;
         // Only rule-provider files change. Mihomo's TUN, sockets and active
         // proxy connections stay alive; no PUT /configs?force=true on routine edits.
         var next = settings.Mode == "direct" ? null
@@ -353,16 +353,16 @@ public sealed class VpnCore : IDisposable
             useSingBoxSidecar: activeEngine == TunnelEngine.SingBox,
             hotRules: next != null, preparedHotRules: next);
         config["secret"] = secret;
+        config["external-controller"] = $"127.0.0.1:{controllerPort}";
         string payload = YamlWriter.Serialize(config);
         if (payload != lastAppliedConfig || lastHotPlan == null || next == null)
         {
             OnLog?.Invoke("Для структурного изменения требуется переподключение. Текущий VPN не прерываю.");
-            return;
+            return RouteReloadResult.ReconnectRequired;
         }
         var changed = next.Files.Where(x => !lastHotPlan.Files.TryGetValue(x.Key, out string? previous)
                 || previous != x.Value).ToList();
-        if (changed.Count == 0) return;
-        var applied = new List<string>();
+        if (changed.Count == 0) return RouteReloadResult.Unchanged;
         try
         {
             foreach (var (name, filePayload) in changed)
@@ -370,33 +370,39 @@ public sealed class VpnCore : IDisposable
                 string path = Path.Combine(UserStore.Home, "hot-rules", name + ".yaml");
                 HotRuleProviders.WriteAtomic(path, filePayload);
                 using var request = new HttpRequestMessage(HttpMethod.Put,
-                    $"http://127.0.0.1:{ApiPort}/providers/rules/{Uri.EscapeDataString(name)}");
+                    $"http://127.0.0.1:{controllerPort}/providers/rules/{Uri.EscapeDataString(name)}");
                 request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + secret);
                 using var response = await api.SendAsync(request);
                 response.EnsureSuccessStatusCode();
-                applied.Add(name);
             }
-            lastHotPlan = next;
-            int moved = await CloseStaleConnectionsAsync(rules, settings.Mode);
+            int moved = await CloseStaleConnectionsAsync(nodes, rules, settings);
             OnLog?.Invoke($"Горячее обновление {changed.Count} наборов правил без сброса VPN"
                 + (moved > 0 ? $"; переподключено {moved} затронутых соединений." : "."));
+            lastHotPlan = next;
+            return RouteReloadResult.Applied;
         }
-        catch
+        catch (Exception applyError)
         {
-            // Roll back files, including the one whose API update failed.
+            bool rollbackFailed = false;
             foreach (var (name, _) in changed)
             {
                 if (!lastHotPlan.Files.TryGetValue(name, out var oldPayload)) continue;
-                HotRuleProviders.WriteAtomic(
-                    Path.Combine(UserStore.Home, "hot-rules", name + ".yaml"), oldPayload);
                 try
                 {
+                    HotRuleProviders.WriteAtomic(Path.Combine(UserStore.Home, "hot-rules", name + ".yaml"), oldPayload);
                     using var rollback = new HttpRequestMessage(HttpMethod.Put,
-                        $"http://127.0.0.1:{ApiPort}/providers/rules/{Uri.EscapeDataString(name)}");
+                        $"http://127.0.0.1:{controllerPort}/providers/rules/{Uri.EscapeDataString(name)}");
                     rollback.Headers.TryAddWithoutValidation("Authorization", "Bearer " + secret);
                     using var response = await api.SendAsync(rollback);
+                    response.EnsureSuccessStatusCode();
                 }
-                catch { }
+                catch { rollbackFailed = true; }
+            }
+            if (rollbackFailed)
+            {
+                // Never report a later no-op as success after a partial rollback.
+                lastAppliedConfig = null;
+                throw new InvalidOperationException("Не удалось полностью восстановить прежние правила. Требуется переподключение.", applyError);
             }
             throw;
         }
@@ -406,7 +412,7 @@ public sealed class VpnCore : IDisposable
     {
         if (!IsTransportHealthy) throw new InvalidOperationException("Сетевое ядро недоступно.");
         using var request = new HttpRequestMessage(HttpMethod.Get,
-            $"http://127.0.0.1:{ApiPort}/connections");
+            $"http://127.0.0.1:{controllerPort}/connections");
         request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + secret);
         using var response = await api.SendAsync(request);
         response.EnsureSuccessStatusCode();
@@ -418,7 +424,7 @@ public sealed class VpnCore : IDisposable
             {
                 string url = Uri.EscapeDataString("https://www.gstatic.com/generate_204");
                 using var delayRequest = new HttpRequestMessage(HttpMethod.Get,
-                    $"http://127.0.0.1:{ApiPort}/proxies/VEGA/delay?url={url}&timeout=3500");
+                    $"http://127.0.0.1:{controllerPort}/proxies/VEGA/delay?url={url}&timeout=3500");
                 delayRequest.Headers.TryAddWithoutValidation("Authorization", "Bearer " + secret);
                 using var delayResponse = await api.SendAsync(delayRequest);
                 delayResponse.EnsureSuccessStatusCode();
@@ -432,60 +438,50 @@ public sealed class VpnCore : IDisposable
         return meter.Parse(raw, DateTime.UtcNow, latency);
     }
 
-    private static bool DomainMatches(string host, string suffix) =>
-        host.Equals(suffix, StringComparison.OrdinalIgnoreCase)
-        || host.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase);
+    // On-demand quality probe, separate from recovery health checks. Uses
+    // Mihomo's HTTPS delay endpoint via VEGA and does not measure Discord UDP.
+    public async Task<int?> ProbeVpnHttpsDelayAsync(CancellationToken cancellation = default)
+    {
+        if (!IsTransportHealthy) return null;
+        try
+        {
+            string url = Uri.EscapeDataString("https://www.gstatic.com/generate_204");
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                $"http://127.0.0.1:{controllerPort}/proxies/VEGA/delay?url={url}&timeout=3500");
+            request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + secret);
+            using var response = await api.SendAsync(request, cancellation);
+            response.EnsureSuccessStatusCode();
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellation));
+            return json.RootElement.TryGetProperty("delay", out var value)
+                && value.TryGetInt32(out var ms) && ms > 0 ? ms : null;
+        }
+        catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
 
     public static bool IsStaleConnection(string host, string[] chains,
         IReadOnlyList<RouteRule> rules, string mode, string? destinationIp = null, string? processName = null,
-        string? processPath = null)
+        string? processPath = null, IReadOnlyList<ProxyNode>? nodes = null, AppSettings? settings = null)
     {
-        if (chains.Length == 0 || mode == "direct") return false;
-        // Manual IP/CIDR exceptions must take precedence even over the built-in
-        // Telegram process and IP rules, including previously-opened connections.
-        var effectiveRule = rules.Where(r => r.Manual
-                && RouteTarget.TryParse(r.Domain, out var target)
-                && target.Matches(host, destinationIp, processName, processPath))
-            .OrderByDescending(r => RulePriority(r.Domain))
-            .FirstOrDefault();
-        // Discord desktop WebRTC sessions have no DNS hostname; they must be
-        // reconnected when routing changes from DIRECT to the process VPN rule.
-        if (effectiveRule == null && DiscordRouting.IsDiscordProcess(processName))
-            return chains.Any(x => x.Equals("DIRECT", StringComparison.OrdinalIgnoreCase));
-        if (effectiveRule == null && mode == "smart")
-        {
-            effectiveRule = rules.Where(r => !r.Manual && (r.Route == "VEGA" || r.Route == "DIRECT")
-                    && RouteTarget.TryParse(r.Domain, out var target)
-                    && target.Matches(host, destinationIp))
-                .OrderByDescending(r => RulePriority(r.Domain))
-                .FirstOrDefault();
-        }
-        if (effectiveRule == null)
-        {
-            if (mode != "apps" && (TelegramRouting.IsTelegramAddress(destinationIp)
-                || TelegramRouting.IsTelegramAddress(host)
-                || TelegramRouting.IsTelegramProcess(processName)))
-                return chains.Any(x => x.Equals("DIRECT", StringComparison.OrdinalIgnoreCase));
-            return false;
-        }
-
-        string last = chains.Last();
-        if (effectiveRule.Route == "DIRECT")
-            return chains.Any(x => x.Equals("VEGA", StringComparison.OrdinalIgnoreCase))
-                || !last.Equals("DIRECT", StringComparison.OrdinalIgnoreCase);
-        if (effectiveRule.Route == "REJECT")
-            return !last.Equals("REJECT", StringComparison.OrdinalIgnoreCase);
-        if (effectiveRule.Route == "VEGA")
-            return chains.Any(x => x.Equals("DIRECT", StringComparison.OrdinalIgnoreCase))
-                || (chains.Length == 1 && last.Equals("REJECT", StringComparison.OrdinalIgnoreCase));
-        return false;
+        if (chains.Length == 0) return false;
+        string expected = RoutingPolicy.ExpectedRoute(rules, mode, host, destinationIp, processName, processPath, nodes, settings);
+        if (expected == "VEGA")
+            return chains.Any(x => x.Equals("DIRECT", StringComparison.OrdinalIgnoreCase)
+                || x.Equals("REJECT", StringComparison.OrdinalIgnoreCase));
+        return !chains.Any(x => x.Equals(expected, StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task<int> CloseStaleConnectionsAsync(
-        IReadOnlyList<RouteRule> rules, string mode)
+        IReadOnlyList<ProxyNode> nodes, IReadOnlyList<RouteRule> rules, AppSettings settings)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get,
-            $"http://127.0.0.1:{ApiPort}/connections");
+            $"http://127.0.0.1:{controllerPort}/connections");
         request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + secret);
         try
         {
@@ -503,6 +499,9 @@ public sealed class VpnCore : IDisposable
                     || !conn.TryGetProperty("chains", out var chainData)
                     || chainData.ValueKind != JsonValueKind.Array)
                     continue;
+                if (conn.TryGetProperty("rule", out var ruleType)
+                    && conn.TryGetProperty("rulePayload", out var rulePayload)
+                    && IsDiagnosticConnection(ruleType.GetString(), rulePayload.GetString())) continue;
                 string id = connectionId.GetString() ?? "";
                 string host = metadata.TryGetProperty("host", out var domain)
                     ? domain.GetString() ?? "" : "";
@@ -514,18 +513,25 @@ public sealed class VpnCore : IDisposable
                 string[] chain = chainData.EnumerateArray().Select(x => x.GetString() ?? "").ToArray();
                 string ownerPath = metadata.TryGetProperty("processPath", out var path)
                     ? path.GetString() ?? "" : "";
-                if (IsStaleConnection(host, chain, rules, mode, ip, owner, ownerPath))
+                if (IsStaleConnection(host, chain, rules, settings.Mode, ip, owner, ownerPath, nodes, settings))
                     ids.Add(id);
             }
-            int closed = 0;
-            foreach (string id in ids.Take(60))
+            int closed = 0, failed = 0;
+            await Parallel.ForEachAsync(ids, new ParallelOptions { MaxDegreeOfParallelism = 8 }, async (id, cancellation) =>
             {
-                using var closeRequest = new HttpRequestMessage(HttpMethod.Delete,
-                    $"http://127.0.0.1:{ApiPort}/connections/{id}");
-                closeRequest.Headers.TryAddWithoutValidation("Authorization", "Bearer " + secret);
-                using var closeResponse = await api.SendAsync(closeRequest);
-                if (closeResponse.IsSuccessStatusCode) closed++;
-            }
+                try
+                {
+                    using var closeRequest = new HttpRequestMessage(HttpMethod.Delete,
+                        $"http://127.0.0.1:{controllerPort}/connections/{id}");
+                    closeRequest.Headers.TryAddWithoutValidation("Authorization", "Bearer " + secret);
+                    using var closeResponse = await api.SendAsync(closeRequest, cancellation);
+                    if (closeResponse.IsSuccessStatusCode) Interlocked.Increment(ref closed);
+                    else Interlocked.Increment(ref failed);
+                }
+                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+                { Interlocked.Increment(ref failed); }
+            });
+            if (failed > 0) OnLog?.Invoke($"Не удалось закрыть {failed} старых соединений. Перезапустите затронутые приложения.");
             return closed;
         }
         catch (Exception error)

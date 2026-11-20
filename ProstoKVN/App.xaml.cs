@@ -41,4 +41,10 @@ public partial class App : Application
         singleInstance?.Dispose();
         base.OnExit(e);
     }
+
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        (MainWindow as ProstoKVN.MainWindow)?.PrepareForSessionEnd();
+        base.OnSessionEnding(e);
+    }
 }

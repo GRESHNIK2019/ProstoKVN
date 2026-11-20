@@ -6,24 +6,27 @@ using System.Net;
 
 namespace ProstoKVN;
 
-public enum RouteTargetKind { Domain, IPv4, IPv6, IPv4Subnet, IPv6Subnet, ProcessName, ProcessPath }
+public enum RouteTargetKind { Domain, DomainExact, IPv4, IPv6, IPv4Subnet, IPv6Subnet, ProcessName, ProcessPath }
 
 /// <summary>Validation, normalization and matching for a user-created route target.</summary>
 public readonly record struct RouteTarget(string Value, RouteTargetKind Kind, int PrefixBits)
 {
-    public bool IsDomain => Kind == RouteTargetKind.Domain;
+    public bool IsDomain => Kind is RouteTargetKind.Domain or RouteTargetKind.DomainExact;
     public bool IsAddress => Kind is RouteTargetKind.IPv4 or RouteTargetKind.IPv6;
     public bool IsSubnet => Kind is RouteTargetKind.IPv4Subnet or RouteTargetKind.IPv6Subnet;
     public bool IsApplication => Kind is RouteTargetKind.ProcessName or RouteTargetKind.ProcessPath;
     // Prefixes keep existing routes.json entries backward compatible and avoid
     // interpreting an executable name such as chrome.exe as a domain.
-    public string DisplayValue => IsApplication ? Value[(Value.IndexOf(':') + 1)..] : Value;
+    public string DisplayValue => IsApplication ? Value[(Value.IndexOf(':') + 1)..]
+        : Kind == RouteTargetKind.DomainExact ? Value["domain-exact:".Length..] : Value;
     public int Priority => Kind == RouteTargetKind.ProcessPath ? 5000
         : Kind == RouteTargetKind.ProcessName ? 4000
-        : IsAddress ? 3000 + PrefixBits : IsSubnet ? 2000 + PrefixBits : 1000 + Value.Length;
+        : IsAddress ? 3000 + PrefixBits : IsSubnet ? 2000 + PrefixBits
+        : Kind == RouteTargetKind.DomainExact ? 1500 + DisplayValue.Length : 1000 + Value.Length;
     public string DisplayKind => Kind switch
     {
-        RouteTargetKind.Domain => "Домен",
+        RouteTargetKind.Domain => "Домен и поддомены",
+        RouteTargetKind.DomainExact => "Точный домен",
         RouteTargetKind.ProcessName or RouteTargetKind.ProcessPath => "Приложение",
         RouteTargetKind.IPv4 or RouteTargetKind.IPv6 => "IP",
         _ => "Подсеть"
@@ -31,12 +34,14 @@ public readonly record struct RouteTarget(string Value, RouteTargetKind Kind, in
     public string MihomoType => Kind switch
     {
         RouteTargetKind.Domain => "DOMAIN-SUFFIX",
+        RouteTargetKind.DomainExact => "DOMAIN",
         RouteTargetKind.ProcessName => "PROCESS-NAME",
         RouteTargetKind.ProcessPath => "PROCESS-PATH",
         RouteTargetKind.IPv4 or RouteTargetKind.IPv4Subnet => "IP-CIDR",
         _ => "IP-CIDR6"
     };
-    public string MihomoValue => IsApplication ? DisplayValue : IsAddress ? Value + "/" + PrefixBits : Value;
+    public string MihomoValue => IsApplication || Kind == RouteTargetKind.DomainExact
+        ? DisplayValue : IsAddress ? Value + "/" + PrefixBits : Value;
 
     public string ToRule(string proxy)
         => $"{MihomoType},{MihomoValue},{proxy}" + (IsDomain || IsApplication ? "" : ",no-resolve");
@@ -53,8 +58,9 @@ public readonly record struct RouteTarget(string Value, RouteTargetKind Kind, in
         if (IsDomain)
         {
             string h = (host ?? "").TrimEnd('.');
-            return h.Equals(Value, StringComparison.OrdinalIgnoreCase)
-                || h.EndsWith("." + Value, StringComparison.OrdinalIgnoreCase);
+            return h.Equals(DisplayValue, StringComparison.OrdinalIgnoreCase)
+                || (Kind == RouteTargetKind.Domain
+                    && h.EndsWith("." + DisplayValue, StringComparison.OrdinalIgnoreCase));
         }
 
         string addressText = !string.IsNullOrWhiteSpace(ip) ? ip : host ?? "";
@@ -76,6 +82,17 @@ public readonly record struct RouteTarget(string Value, RouteTargetKind Kind, in
         return true;
     }
 
+    // The editor accepts a pasted URL, but the persisted route remains a host.
+    public static bool TryParseUserInput(string? input, out RouteTarget target)
+    {
+        string value = (input ?? "").Trim();
+        if ((value.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                || value.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            && Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            && string.IsNullOrEmpty(uri.UserInfo)) value = uri.IdnHost.Trim('[', ']');
+        return TryParse(value, out target);
+    }
+
     public static bool TryParse(string? input, out RouteTarget target)
     {
         target = default;
@@ -84,10 +101,17 @@ public readonly record struct RouteTarget(string Value, RouteTargetKind Kind, in
             return TryParseApplication(value[13..], out target, nameOnly: true);
         if (value.StartsWith("process-path:", StringComparison.OrdinalIgnoreCase))
             return TryParseApplication(value[13..], out target, nameOnly: false);
-        if (value.Length == 0 || value.Length > 253 || value.Contains('%'))
+        // A special persisted prefix distinguishes exact-host matches from
+        // legacy suffix rules; unchanged routes.json entries keep old semantics.
+        bool exactDomain = value.StartsWith("domain-exact:", StringComparison.OrdinalIgnoreCase);
+        if (exactDomain) value = value["domain-exact:".Length..];
+        if (value.Length == 0 || value.Length > 253 || value.Contains('%') || exactDomain && (value.Contains('/') || IPAddress.TryParse(value, out _)))
             return false;
         if (value.StartsWith("*.", StringComparison.Ordinal))
+        {
+            if (exactDomain) return false;
             value = value[2..];
+        }
         value = value.TrimEnd('.');
 
         int slash = value.IndexOf('/');
@@ -132,7 +156,8 @@ public readonly record struct RouteTarget(string Value, RouteTargetKind Kind, in
         {
             string ascii = new IdnMapping().GetAscii(value).ToLowerInvariant();
             if (!VpnCore.IsDomainSafe(ascii)) return false;
-            target = new RouteTarget(ascii, RouteTargetKind.Domain, 0);
+            target = new RouteTarget(exactDomain ? "domain-exact:" + ascii : ascii,
+                exactDomain ? RouteTargetKind.DomainExact : RouteTargetKind.Domain, 0);
             return true;
         }
         catch (ArgumentException) { return false; }

@@ -158,7 +158,7 @@ public static class ApplicationRoutingTests
                 Get<Expander>("AddRuleSection").IsExpanded = true;
                 Get<TextBox>("RuleLabelBox").BringIntoView();
                 Pump();
-                var scroll = Get<ScrollViewer>("RulesPageScroll");
+                var scroll = Get<ScrollViewer>("RuleEditorScroll");
                 scroll.ScrollToVerticalOffset(scroll.VerticalOffset
                     + Get<Expander>("AddRuleSection").TransformToAncestor(scroll).Transform(new Point()).Y - 4);
                 Pump();

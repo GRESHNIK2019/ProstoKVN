@@ -35,7 +35,7 @@ public static class LayoutRedesignTests
                 {
                     Pump();var boxes=names.Select(n=>(Name:n,Element:Get<FrameworkElement>(n))).Where(v=>v.Element.IsVisible)
                         .Select(v=>(v.Name,Bounds:v.Element.TransformToAncestor(w).TransformBounds(new Rect(v.Element.RenderSize)))).ToArray();
-                    foreach(var box in boxes){Check(box.Bounds.Width>40 && box.Bounds.Left>=184 && box.Bounds.Right<=w.ActualWidth-10,box.Name+" has usable width and stays inside the content area");}
+                    foreach(var box in boxes){Check(box.Bounds.Width>40 && box.Bounds.Left>=(Get<Border>("RuleEditorOverlay").IsVisible ? 10 : 184) && box.Bounds.Right<=w.ActualWidth-10,box.Name+" has usable width and stays inside the content area");}
                     for(int i=0;i<boxes.Length;i++)for(int j=i+1;j<boxes.Length;j++)
                     {var intersect=Rect.Intersect(boxes[i].Bounds,boxes[j].Bounds);Check(intersect.IsEmpty||intersect.Width<1||intersect.Height<1,boxes[i].Name+" does not overlap "+boxes[j].Name);}
                 }
@@ -74,7 +74,7 @@ public static class LayoutRedesignTests
                     var dialog=new ClientDialog(w,string.Join("\n",Enumerable.Repeat("Очень длинное сообщение об ошибке. "+new string('А',120),30)),"Ошибка подключения",MessageBoxButton.YesNo,MessageBoxImage.Error,MessageBoxResult.No)
                     {WindowStartupLocation=WindowStartupLocation.Manual,Left=-2400,Top=-2400,ShowActivated=false};
                     dialog.Show();Pump();Save(dialog,theme+"-long-error-dialog");
-                    var actions=((Grid)dialog.Content).Children.OfType<WrapPanel>().Single();
+                    var actions=((Grid)((Border)dialog.Content).Child).Children.OfType<WrapPanel>().Single();
                     var bounds=actions.TransformToAncestor(dialog).TransformBounds(new Rect(actions.RenderSize));
                     Check(bounds.Bottom<=dialog.ActualHeight && bounds.Top>0,"Long dialog keeps confirmation buttons visible");
                     Check(dialog.Result==MessageBoxResult.No && actions.Children.OfType<Button>().Single(b=>b.IsDefault).Content.ToString()=="Нет","Delete-style dialog defaults to No");

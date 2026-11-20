@@ -50,17 +50,23 @@ public partial class MainWindow : Window
     private bool checkingUpdates;
     private bool connectionBusy;
     private string? appliedMode;
+    private AppSettings? activeSettings;
+    private bool rulesNeedReconnect;
+    private string? rulesApplyError;
     private bool appliedTun;
+    private string appliedTunStack = "mixed";
+    private bool appliedTunDnsHijack = true;
+    private bool appliedTunStrictRoute;
     private GitHubUpdate? readyUpdate;
     // Injectable to test startup without contacting a real subscription server.
     public Func<string, Task<SubscriptionImporter.Result>> StartupSubscriptionLoader { get; set; }
         = url => SubscriptionImporter.LoadAsync(url);
     private readonly Queue<string> observedTraffic = new();
     private readonly HashSet<string> observedQueued = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> expandedServices = new(StringComparer.OrdinalIgnoreCase);
     public MainWindow()
     {
         InitializeComponent();
+        InitializeQualityDiagnostics();
         // Keep the first window inside the usable desktop at high display scaling.
         var workArea = SystemParameters.WorkArea;
         MinWidth = Math.Min(MinWidth, Math.Max(400, workArea.Width - 32));
@@ -95,8 +101,13 @@ public partial class MainWindow : Window
                 _ = CheckUpdatesAsync(false);
         };
         settings = UserStore.LoadSettings();
+        settings.Mode = RoutingPolicy.NormalizeMode(settings.Mode);
         ApplyTheme(settings.Theme, save: false);
         rules = UserStore.LoadRules();
+        var modeUpgrade = UserStore.UpgradeRoutingModes(settings, rules);
+        settings = modeUpgrade.Settings;
+        rules = modeUpgrade.Rules;
+        ModeMigrationNotice.Text = modeUpgrade.Notice;
         // Earlier versions created trial VPN rules without a working VPN response.
         // Retire only those unconfirmed automatic routes, retaining a local backup.
         int retiredTrials = rules.Count(r => !r.Manual && r.Provisional);
@@ -132,11 +143,18 @@ public partial class MainWindow : Window
         profiles = SubscriptionProfileStore.Load(settings);
         RefreshSubscriptionList(profiles.FirstOrDefault());
         AutoLearnBox.IsChecked = settings.AutoLearn;
-        if (settings.Mode == "apps") settings.Tun = true;
+        if (settings.Mode == "mine") settings.Tun = true;
         TunBox.IsChecked = settings.Tun;
-        TunBox.IsEnabled = settings.Mode != "apps";
-        AutoLearnBox.IsEnabled = settings.Mode != "apps";
-        ModeBox.SelectedIndex = settings.Mode == "vpn" ? 1 : settings.Mode == "direct" ? 2 : settings.Mode == "apps" ? 3 : 0;
+        TunBox.IsEnabled = settings.Mode != "mine";
+        TunStackBox.SelectedIndex = VpnCore.NormalizeTunStack(settings.TunStack) switch
+        {
+            "system" => 1, "gvisor" => 2, _ => 0
+        };
+        TunDnsHijackBox.IsChecked = settings.TunDnsHijack;
+        TunStrictRouteBox.IsChecked = settings.TunStrictRoute;
+        TunAdvancedSection.IsEnabled = settings.Tun;
+        AutoLearnBox.IsEnabled = settings.Mode == "smart";
+        ModeBox.SelectedValue = settings.Mode;
         UserStore.PruneExpiredRules(rules);
         RefreshRules();
         UpdateRuleCategoryButtons();
@@ -161,11 +179,19 @@ public partial class MainWindow : Window
         Closing += async (_, args) =>
         {
             if (shutdownFinalized) return;
+            if (closeToTrayEnabled && !exitRequested)
+            {
+                args.Cancel = true;
+                HideToTray();
+                return;
+            }
             // Delay closing until an in-flight StartAsync releases the gate,
             // otherwise the core can turn the system proxy back on after exit.
             args.Cancel = true;
+            if (isWindowClosing) return;
             isWindowClosing = true;
             ResetServerLatencySession();
+            StopQualityDiagnostics();
             recovery.Disable();
             ++connectionRevision;
             monitorTimer.Stop();
@@ -185,6 +211,8 @@ public partial class MainWindow : Window
                 _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(Close));
             }
         };
+        Closed += (_, _) => DisposeTray();
+        if (closeToTrayEnabled) InitializeTray();
         if (retiredTrials > 0) AppendLog($"Удалено {retiredTrials} неподтверждённых пробных AUTO-правил; прежние правила сохранены в резервной копии.");
         AppendLog("ProstoKVN открыт. Для TUN нужны права администратора.");
         if (removedRu > 0)
@@ -209,7 +237,7 @@ public partial class MainWindow : Window
     }
 
     private void CloseWindow_Click(object sender, RoutedEventArgs e)
-        => SystemCommands.CloseWindow(this);
+        => HideToTray();
 
     private void SubscriptionsLink_Click(object sender, RoutedEventArgs e)
     {
@@ -222,8 +250,7 @@ public partial class MainWindow : Window
         if (ConnectionTitle == null) return;
         bool active = core.IsRunning;
         bool desired = recovery.Desired;
-        bool pending = active && appliedMode != null
-            && (appliedMode != settings.Mode || appliedTun != settings.Tun);
+        bool pending = HasPendingConnectionSettings;
         ConnectionTitle.Text = connectionBusy ? "Подключаемся…"
             : !active && desired ? "Восстанавливаем соединение"
             : !active ? "VPN выключен"
@@ -256,21 +283,7 @@ public partial class MainWindow : Window
             active || desired ? "TextPrimary" : "OnAccent");
         ConnectButton.SetResourceReference(Control.BorderBrushProperty,
             active || desired ? "BorderStrong" : "AccentSolid");
-        ModeDescription.Text = ModeBox.SelectedIndex == 1
-            ? "Весь интернет через выбранный сервер, кроме ручных исключений DIRECT."
-            : ModeBox.SelectedIndex == 2
-                ? "Интернет работает напрямую. VPN не используется."
-                : ModeBox.SelectedIndex == 3
-                    ? "Discord (включая голосовой UDP) и ваши ручные правила через VPN. Все остальные приложения и сайты — напрямую (DIRECT). TUN включается автоматически."
-                    : "VPN используется по правилам и при обнаружении ограничений. Остальные адреса открываются напрямую.";
-        CoverageHint.Text = settings.Mode == "apps"
-            ? "TUN · Discord и выбранные вручную"
-            : settings.Tun ? "TUN · маршрутизация по правилам" : "Браузер и системный прокси";
-        CoverageHint.ToolTip = settings.Mode == "apps"
-            ? "TUN перехватывает трафик для применения правил. По умолчанию DIRECT; через VPN только Discord и ручные правила. Нужны права администратора."
-            : settings.Tun
-                ? "TUN охватывает приложения, но решение DIRECT/VPN принимает режим и правила."
-                : "Системный прокси не перехватывает голосовой UDP и трафик большинства игр.";
+        UpdateRoutingUi();
         ServerHint.Text = nodes.Count == 0 ? "Нет серверов. Добавьте или обновите подписку."
             : active ? "При выборе другого сервера соединение переключится автоматически."
             : "Этот сервер будет использован при подключении.";
@@ -281,97 +294,14 @@ public partial class MainWindow : Window
             : active ? "Настройки применены к текущему подключению."
                 : "Изменения применятся при следующем подключении.";
         SubscriptionsEmptyText.Visibility = profiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        UpdateQualityUi(updateStatus: false);
+        UpdateTrayStatus();
     }
 
     private async void ApplyConnectionSettings_Click(object sender, RoutedEventArgs e)
     {
         if (connectionBusy || !core.IsRunning) return;
         await ReconnectForSelectionAsync();
-    }
-
-    private void RuleSearch_Changed(object sender, TextChangedEventArgs e)
-    {
-        if (RulesList == null || RuleSearchBox == null) return;
-        if (applicationRulePage) applicationRuleQuery = RuleSearchBox.Text;
-        else siteRuleQuery = RuleSearchBox.Text;
-        RefreshRules();
-    }
-
-    private void SitesRules_Click(object sender, RoutedEventArgs e) => SwitchRuleCategory(false);
-    private void ApplicationsRules_Click(object sender, RoutedEventArgs e) => SwitchRuleCategory(true);
-
-    private void UpdateRuleCategoryButtons()
-    {
-        if (SitesRulesButton == null || ApplicationsRulesButton == null) return;
-        SitesRulesButton.FontWeight = applicationRulePage ? FontWeights.Normal : FontWeights.SemiBold;
-        ApplicationsRulesButton.FontWeight = applicationRulePage ? FontWeights.SemiBold : FontWeights.Normal;
-        SitesRulesButton.SetResourceReference(Control.BackgroundProperty,
-            applicationRulePage ? "SurfaceRaised" : "AccentSoft");
-        ApplicationsRulesButton.SetResourceReference(Control.BackgroundProperty,
-            applicationRulePage ? "AccentSoft" : "SurfaceRaised");
-        SitesRulesButton.SetResourceReference(Control.BorderBrushProperty,
-            applicationRulePage ? "Line" : "AccentSolid");
-        ApplicationsRulesButton.SetResourceReference(Control.BorderBrushProperty,
-            applicationRulePage ? "AccentSolid" : "Line");
-    }
-
-    private void SwitchRuleCategory(bool applications)
-    {
-        if (RuleSearchBox == null || RulesList == null || applicationRulePage == applications) return;
-        if (applicationRulePage) applicationRuleQuery = RuleSearchBox.Text;
-        else siteRuleQuery = RuleSearchBox.Text;
-        applicationRulePage = applications;
-        RulesList.SelectedItem = null;
-        editingRule = null;
-        AddRuleSection.IsExpanded = false;
-        DomainBox.Clear();
-        RuleLabelBox.Clear();
-        RuleTargetKindBox.SelectedIndex = applications ? 1 : 0;
-        RuleTargetKindLabel.Text = applications ? "Приложения" : "Сайты и IP";
-        RuleSearchLabel.Text = applications ? "Поиск приложений" : "Поиск сайтов и IP";
-        RuleSearchBox.ToolTip = applications ? "Имя процесса, путь к .exe или название"
-            : "Домен, IP-адрес или название сайта";
-        NewRuleButton.Content = applications ? "Добавить приложение" : "Добавить сайт или IP";
-        RuleGroupsSection.Header = applications ? "Приложения — сохранённые правила"
-            : "Сайты и IP — сохранённые правила";
-        RulesEmptyText.Text = applications
-            ? "Приложений пока нет. Добавьте программу, чтобы настроить её маршрут."
-            : "Сайты и IP не найдены. Измените поиск или добавьте правило.";
-        RuleSearchBox.Text = applications ? applicationRuleQuery : siteRuleQuery;
-        UpdateRuleCategoryButtons();
-        RefreshRules();
-        RulesPageScroll.ScrollToTop();
-    }
-
-    private void NewRule_Click(object sender, RoutedEventArgs e)
-    {
-        RulesList.SelectedItem = null;
-        editingRule = null;
-        RuleTargetKindBox.SelectedIndex = applicationRulePage ? 1 : 0;
-        DomainBox.Clear();
-        RuleLabelBox.Clear();
-        RuleRouteBox.SelectedIndex = 1;
-        RuleNodeBox.SelectedIndex = 0;
-        AddRuleSection.Header = "Новое правило";
-        AddRuleSection.IsExpanded = true;
-        DomainBox.BringIntoView();
-        DomainBox.Focus();
-    }
-
-    private void EditRule_Click(object sender, RoutedEventArgs e)
-    {
-        if (RulesList.SelectedItem is not RouteRule) return;
-        AddRuleSection.Header = "Изменить правило";
-        AddRuleSection.IsExpanded = true;
-        DomainBox.BringIntoView();
-        DomainBox.Focus();
-    }
-
-    private void CloseRuleEditor_Click(object sender, RoutedEventArgs e)
-    {
-        AddRuleSection.IsExpanded = false;
-        RulesPageScroll.ScrollToTop();
-        NewRuleButton.Focus();
     }
 
     private void CloseSubscriptionEditor_Click(object sender, RoutedEventArgs e)
@@ -479,7 +409,7 @@ public partial class MainWindow : Window
                 throw new InvalidOperationException("Не удалось запустить обновлятор.");
             // No manual core.Stop() here: normal Closing cleans up TUN,
             // system proxy and sidecar only after the helper was launched.
-            Close();
+            RequestExit();
         }
         catch (Exception ex)
         {
@@ -524,8 +454,12 @@ public partial class MainWindow : Window
     }
     private void Persist()
     {
-        settings.Mode = ModeBox.SelectedIndex == 1 ? "vpn" : ModeBox.SelectedIndex == 2 ? "direct" : ModeBox.SelectedIndex == 3 ? "apps" : "smart";
+        if (ModeBox.SelectedValue is string mode && RoutingModes.IsPrimary(mode)) settings.Mode = mode;
         settings.Tun = TunBox.IsChecked == true;
+        settings.TunStack = VpnCore.NormalizeTunStack(
+            (TunStackBox.SelectedItem as ComboBoxItem)?.Tag as string);
+        settings.TunDnsHijack = TunDnsHijackBox.IsChecked == true;
+        settings.TunStrictRoute = TunStrictRouteBox.IsChecked == true;
         settings.AutoLearn = AutoLearnBox.IsChecked == true;
         settings.SelectedNode = (ServerBox.SelectedItem as ProxyNode)?.Name ?? settings.SelectedNode;
         if (SubscriptionList.SelectedItem is SubscriptionProfile selectedProfile)
@@ -924,6 +858,8 @@ public partial class MainWindow : Window
             var connectionSettings = new AppSettings
             {
                 Mode = settings.Mode, Tun = settings.Tun,
+                TunStack = settings.TunStack, TunDnsHijack = settings.TunDnsHijack,
+                TunStrictRoute = settings.TunStrictRoute,
                 AutoLearn = settings.AutoLearn, SelectedNode = settings.SelectedNode,
                 ProtectedUrl = settings.ProtectedUrl, Theme = settings.Theme
             };
@@ -933,8 +869,15 @@ public partial class MainWindow : Window
                 core.Stop();
                 return false;
             }
+            activeSettings = connectionSettings;
+            rulesNeedReconnect = false;
+            rulesApplyError = null;
             appliedMode = connectionSettings.Mode;
             appliedTun = connectionSettings.Tun;
+            appliedTunStack = VpnCore.NormalizeTunStack(connectionSettings.TunStack);
+            appliedTunDnsHijack = connectionSettings.TunDnsHijack;
+            appliedTunStrictRoute = connectionSettings.TunStrictRoute;
+            ResetQualityForNewConnection();
             return true;
         }
         finally { connectionGate.Release(); }
@@ -987,6 +930,7 @@ public partial class MainWindow : Window
     }
     private async void Disconnect_Click(object sender, RoutedEventArgs e)
     {
+        if (qualityActive) StopQualityDiagnostics();
         ++connectionRevision;
         vpnExitVerified = false;
         consecutiveFailedVpnChecks = 0;
@@ -1004,22 +948,33 @@ public partial class MainWindow : Window
         UpdateConnectionUi();
         AppendLog("Подключение остановлено, прежний системный прокси восстановлен.");
     }
+    private void TunStack_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        => SettingsChanged_Click(sender, new RoutedEventArgs());
+
     private void SettingsChanged_Click(object sender, RoutedEventArgs e)
     {
         if (!IsLoaded) return;
         bool previousTun = settings.Tun;
+        string previousStack = settings.TunStack;
+        bool previousDns = settings.TunDnsHijack;
+        bool previousStrict = settings.TunStrictRoute;
         Persist();
+        TunAdvancedSection.IsEnabled = settings.Tun;
         UpdateConnectionUi();
-        if (core.IsRunning && previousTun != settings.Tun)
-            AppendLog("Настройка TUN изменена. Переподключись для применения.");
+        if (core.IsRunning && (previousTun != settings.Tun
+            || previousStack != settings.TunStack
+            || previousDns != settings.TunDnsHijack
+            || previousStrict != settings.TunStrictRoute))
+            AppendLog("Настройки TUN изменены. Переподключись для применения.");
     }
     private void ModeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (!IsLoaded) return;
-        bool appsOnly = ModeBox.SelectedIndex == 3;
-        if (appsOnly) TunBox.IsChecked = true;
-        TunBox.IsEnabled = !appsOnly;
-        AutoLearnBox.IsEnabled = !appsOnly;
+        if (!IsLoaded || ModeBox.SelectedValue is not string mode || !RoutingModes.IsPrimary(mode)) return;
+        bool selectedOnly = mode == "mine";
+        if (selectedOnly) TunBox.IsChecked = true;
+        TunBox.IsEnabled = !selectedOnly;
+        TunAdvancedSection.IsEnabled = TunBox.IsChecked == true;
+        AutoLearnBox.IsEnabled = mode == "smart";
         Persist();
         UpdateConnectionUi();
         if (core.IsRunning) AppendLog("Режим изменён. Переподключись для применения.");
@@ -1143,56 +1098,30 @@ public partial class MainWindow : Window
             await connectionGate.WaitAsync();
             try
             {
-                if (!isWindowClosing && core.IsRunning)
-                    await core.ReloadRoutesAsync(nodes, rules, settings);
+                rulesApplyError = null;
+                if (!isWindowClosing && core.IsRunning && activeSettings != null)
+                {
+                    // Pending UI choices must never leak into the running tunnel.
+                    var result = await core.ReloadRoutesAsync(nodes, rules, activeSettings);
+                    rulesNeedReconnect = result == RouteReloadResult.ReconnectRequired;
+                }
             }
             finally { connectionGate.Release(); }
         }
-        catch (Exception ex) { if (!isWindowClosing) AppendLog("Не удалось применить правила: " + ex.Message); }
-        finally { reloadGate.Release(); }
-    }
-    private static string ServiceGroupKey(object? data)
-        => (data as System.Windows.Data.CollectionViewGroup)?.Name?.ToString() ?? "";
-
-    private void ServiceGroup_Loaded(object sender, RoutedEventArgs e)
-    {
-        if (sender is Expander expander)
-            expander.IsExpanded = expandedServices.Contains(ServiceGroupKey(expander.DataContext));
-    }
-    private void ServiceGroup_Expanded(object sender, RoutedEventArgs e)
-    {
-        if (sender is Expander expander && ServiceGroupKey(expander.DataContext) is { Length: > 0 } key)
-            expandedServices.Add(key);
-    }
-    private void ServiceGroup_Collapsed(object sender, RoutedEventArgs e)
-    {
-        if (sender is Expander expander && ServiceGroupKey(expander.DataContext) is { Length: > 0 } key)
-            expandedServices.Remove(key);
-    }
-
-    private void RefreshRules()
-    {
-        double savedOffset = RulesPageScroll?.VerticalOffset ?? 0;
-        RouteRule? selected = RulesList.SelectedItem as RouteRule;
-        RulesList.ItemsSource = null;
-        string query = RuleSearchBox?.Text.Trim() ?? "";
-        var ordered = rules.Where(x => (RouteTarget.TryParse(x.Domain, out var target) && target.IsApplication) == applicationRulePage)
-            .Where(x => query.Length == 0
-                || x.Domain.Contains(query, StringComparison.OrdinalIgnoreCase)
-                || x.ServiceName.Contains(query, StringComparison.OrdinalIgnoreCase)
-                || x.Label.Contains(query, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(x => x.ServiceName)
-            .ThenByDescending(x => x.Manual)
-            .ThenBy(x => x.Domain).ToList();
-        var view = new System.Windows.Data.ListCollectionView(ordered);
-        view.GroupDescriptions.Add(new System.Windows.Data.PropertyGroupDescription(nameof(RouteRule.ServiceName)));
-        RulesList.ItemsSource = view;
-        if (RulesEmptyText != null)
-            RulesEmptyText.Visibility = ordered.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        if (selected != null && ordered.Contains(selected)) RulesList.SelectedItem = selected;
-        if (savedOffset > 0)
-            Dispatcher.BeginInvoke(DispatcherPriority.Loaded,
-                new Action(() => RulesPageScroll?.ScrollToVerticalOffset(savedOffset)));
+        catch (Exception ex)
+        {
+            if (!isWindowClosing)
+            {
+                rulesApplyError = "Правила сохранены, но не применены: " + ex.Message;
+                rulesNeedReconnect = true;
+                AppendLog(rulesApplyError);
+            }
+        }
+        finally
+        {
+            reloadGate.Release();
+            if (!isWindowClosing) UpdateConnectionUi();
+        }
     }
     private void UpdateEngineInfo()
     {
@@ -1200,271 +1129,9 @@ public partial class MainWindow : Window
             EngineInfoLabel.Text = "Автовыбор: " + EngineSelector.Display(selected);
         else EngineInfoLabel.Text = "Ядро определяется по протоколу автоматически";
     }
-    private void RefreshNodeChoices()
-    {
-        RuleNodeBox.ItemsSource = new[] { "Авто (основной)" }.Concat(nodes.Select(n => n.Name)).ToList();
-        RuleNodeBox.SelectedIndex = 0;
-    }
-    private void RuleRouteBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (RuleNodeBox == null) return;
-        RuleNodeBox.IsEnabled = ((RuleRouteBox.SelectedItem as ComboBoxItem)?.Tag as string) == "VEGA";
-    }
-    private bool IsApplicationRule => RuleTargetKindBox.SelectedIndex == 1;
-
-    private void RuleTargetKind_Changed(object sender, SelectionChangedEventArgs e)
-    {
-        if (ChooseApplicationButton == null || DomainBox == null || ApplicationRuleHint == null) return;
-        bool application = IsApplicationRule;
-        ChooseApplicationButton.Visibility = ApplicationRuleHint.Visibility = application
-            ? Visibility.Visible : Visibility.Collapsed;
-        RuleAddressHint.Visibility = application ? Visibility.Collapsed : Visibility.Visible;
-        RuleTargetCaption.Text = application ? "Путь к приложению или имя процесса"
-            : "Адрес сайта или IP";
-        DomainBox.ToolTip = application ? "Полный путь к .exe или имя процесса, например chrome.exe"
-            : "Домен: example.com • IP: 8.8.8.8 • Подсеть: 1.2.3.0/24 • IPv6: 2001:db8::/32";
-        System.Windows.Automation.AutomationProperties.SetName(DomainBox,
-            application ? "Путь или имя приложения" : "Сайт, IP-адрес или подсеть");
-        if (application && IsLoaded && AddRuleSection.IsExpanded)
-            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => DomainBox.BringIntoView()));
-    }
-
-    private void ChooseApplication_Click(object sender, RoutedEventArgs e)
-    {
-        var picker = new Microsoft.Win32.OpenFileDialog
-        {
-            Title = "Выберите приложение для правила",
-            Filter = "Приложения Windows (*.exe)|*.exe",
-            CheckFileExists = true,
-            Multiselect = false
-        };
-        if (picker.ShowDialog(this) != true) return;
-        if (!RouteTarget.TryParseApplication(picker.FileName, out var target))
-        {
-            ClientDialog.Show(this,"Этот путь нельзя использовать в правиле. Выберите .exe без запятых в пути.",
-                "ProstoKVN", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-        DomainBox.Text = target.DisplayValue;
-        if (string.IsNullOrWhiteSpace(RuleLabelBox.Text))
-            RuleLabelBox.Text = System.IO.Path.GetFileNameWithoutExtension(picker.FileName);
-    }
-    private void RulesList_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (SelectedRuleHint == null || RemoveRuleButton == null) return;
-        if (RulesList.SelectedItem is not RouteRule selected)
-        {
-            editingRule = null;
-            SelectedRuleHint.Text = "Выберите правило для изменения или удаления";
-            SelectedRuleHint.ToolTip = null;
-            RemoveRuleButton.IsEnabled = false;
-            EditRuleButton.IsEnabled = false;
-            return;
-        }
-        editingRule = selected;
-        SelectedRuleHint.Text = "Выбрано: " + selected.DisplayTarget;
-        SelectedRuleHint.ToolTip = selected.ToString();
-        RemoveRuleButton.IsEnabled = true;
-        EditRuleButton.IsEnabled = true;
-        if (RuleLabelBox == null) return;
-        // Selecting an existing rule loads it into the editor. Saving makes
-        // the updated entry manual, protecting the name from auto-learning.
-        bool application = RouteTarget.TryParse(selected.Domain, out var selectedTarget) && selectedTarget.IsApplication;
-        RuleTargetKindBox.SelectedIndex = application ? 1 : 0;
-        DomainBox.Text = selected.DisplayTarget;
-        RuleLabelBox.Text = selected.Label ?? "";
-        for (int i = 0; i < RuleRouteBox.Items.Count; i++)
-        {
-            if ((RuleRouteBox.Items[i] as ComboBoxItem)?.Tag as string == selected.Route)
-            {
-                RuleRouteBox.SelectedIndex = i;
-                break;
-            }
-        }
-        int nodeIndex = nodes.FindIndex(n => n.Name == selected.PreferredNode);
-        RuleNodeBox.SelectedIndex = nodeIndex >= 0 ? nodeIndex + 1 : 0;
-    }
-
-    // A right click must target its own row, not a different previously
-    // selected rule. The selection highlight persists while the menu is open.
-    private void RuleItem_RightButtonDown(object sender,
-        System.Windows.Input.MouseButtonEventArgs e)
-    {
-        if (sender is not ListBoxItem { DataContext: RouteRule clicked } row
-            || !rules.Contains(clicked))
-            return;
-
-        RulesList.SelectedItem = clicked;
-        // The empty ContextMenu is declared in XAML so WPF can open it on
-        // the very first right-click. Build each item's actions on demand.
-        if (row.ContextMenu is not ContextMenu menu) return;
-        menu.Items.Clear();
-        var edit = new MenuItem { Header = "Изменить правило" };
-        edit.Click += RuleContextEdit_Click;
-        var delete = new MenuItem { Header = "Удалить правило" };
-        delete.Click += RuleContextDelete_Click;
-        menu.Items.Add(edit);
-        menu.Items.Add(new Separator());
-        menu.Items.Add(delete);
-    }
-
-    private RouteRule? RuleFromContextMenu(object sender)
-    {
-        if (sender is MenuItem { Parent: ContextMenu menu }
-            && menu.PlacementTarget is ListBoxItem { DataContext: RouteRule clicked }
-            && rules.Contains(clicked))
-            return clicked;
-        return RulesList.SelectedItem as RouteRule;
-    }
-
-    private void RuleContextEdit_Click(object sender, RoutedEventArgs e)
-    {
-        if (RuleFromContextMenu(sender) is not RouteRule rule) return;
-        RulesList.SelectedItem = rule;
-        AddRuleSection.IsExpanded = true;
-        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
-        {
-            RulesPageScroll.ScrollToTop();
-            RuleLabelBox.Focus();
-            RuleLabelBox.SelectAll();
-        }));
-    }
-
-    private async void RuleContextDelete_Click(object sender, RoutedEventArgs e)
-        => await DeleteRuleAsync(RuleFromContextMenu(sender));
-    private async void AddRule_Click(object sender, RoutedEventArgs e)
-    {
-        RouteTarget target;
-        bool valid = IsApplicationRule
-            ? RouteTarget.TryParseApplication(DomainBox.Text, out target)
-            : RouteTarget.TryParse(DomainBox.Text, out target) && !target.IsApplication;
-        if (!valid)
-        {
-            ClientDialog.Show(this,IsApplicationRule
-                ? "Выберите .exe или введите имя процесса (chrome.exe) либо полный путь к файлу.\nЗапятые и маски в пути не поддерживаются."
-                : "Введите корректный домен, IP-адрес или подсеть CIDR.\nПримеры: example.com, 8.8.8.8, 1.2.3.0/24, 2001:db8::/32.",
-                "ProstoKVN", MessageBoxButton.OK, MessageBoxImage.Warning);
-            DomainBox.Focus();
-            return;
-        }
-        string route = ((RuleRouteBox.SelectedItem as ComboBoxItem)?.Tag as string) ?? "DIRECT";
-        string preferred = route == "VEGA" && RuleNodeBox.SelectedIndex > 0
-            && RuleNodeBox.SelectedIndex <= nodes.Count
-            ? nodes[RuleNodeBox.SelectedIndex - 1].Name : "";
-        rules.RemoveAll(x => ReferenceEquals(x, editingRule) || (RouteTarget.TryParse(x.Domain, out var oldTarget)
-            && oldTarget.Kind == target.Kind && oldTarget.Value.Equals(target.Value, StringComparison.OrdinalIgnoreCase)));
-        rules.Add(new RouteRule
-        {
-            Domain = target.Value,
-            Label = RuleLabelBox.Text.Trim(),
-            Route = route,
-            PreferredNode = preferred,
-            Manual = true
-        });
-        UserStore.SaveRules(rules);
-        RefreshRules();
-        DomainBox.Clear();
-        RuleLabelBox.Clear();
-        RulesList.SelectedItem = null;
-        RuleNodeBox.SelectedIndex = 0;
-        AppendLog($"Добавлено исключение: {target.DisplayKind} {target.DisplayValue} → "
-            + (route == "VEGA" ? "СЕРВЕР" : route));
-        if (target.IsApplication && !settings.Tun)
-            AppendLog("Для перехвата всех соединений приложения включите TUN в настройках подключения и переподключитесь с правами администратора.");
-        await ReloadRulesSafeAsync();
-    }
-    private async void AutoRoute_Click(object sender, RoutedEventArgs e)
-    {
-        string domain = ProbeBox.Text.Trim().TrimEnd('.').ToLowerInvariant();
-        if (!VpnCore.IsDomainSafe(domain)) { ProbeResult.Text = "Введите домен, например chatgpt.com"; return; }
-        if (!core.IsRunning || nodes.Count == 0) { ProbeResult.Text = "Сначала подключись."; return; }
-        ProbeResult.Text = "Проверяю прямой, выбранный и альтернативные маршруты...";
-        try
-        {
-            await learner.InspectAsync(domain, rules, true, nodes, settings.SelectedNode, force: true);
-            var effective = rules.FirstOrDefault(r => r.Domain.Equals(domain, StringComparison.OrdinalIgnoreCase));
-            var check = await learner.ProbeDetailsAsync(domain);
-            ProbeResult.Text = RouteAssessment.Describe(domain, check, effective);
-            if (!check.Direct.Usable && !check.Vpn.Usable)
-                ProbeResult.Text += "\nПроверка маршрутов не прошла. Ручное правило не гарантирует доступность сайта.";
-            AppendLog($"Диагностика {domain}: прямой {check.Direct.State}, сервер {check.Vpn.State}.");
-        }
-        catch (Exception ex) { ProbeResult.Text = "Проверка не завершена: " + ex.Message; }
-    }
-    private bool ruleDeleteBusy;
-    // Test-only confirmation override for isolated UI regression tests.
-    private Func<RouteRule, bool>? confirmDeleteOverride = null;
-
-    private async void RemoveRule_Click(object sender, RoutedEventArgs e)
-        => await DeleteRuleAsync(RulesList.SelectedItem as RouteRule);
-
-    private async Task DeleteRuleAsync(RouteRule? selected)
-    {
-        if (selected == null || !rules.Contains(selected) || ruleDeleteBusy) return;
-
-        string additional = selected.Manual ? ""
-            : "\nЭто автоматическое правило может появиться снова при обучении маршрутов.";
-        bool confirmed = confirmDeleteOverride != null
-            ? confirmDeleteOverride(selected)
-            : ClientDialog.Show(this,
-                $"Удалить правило «{selected.Domain}»?\nМаршрут: " +
-                (selected.Route == "VEGA" ? "СЕРВЕР" : selected.Route) +
-                additional + "\n\nИзменение будет сохранено и применено к VPN.",
-                "Удаление правила • ProstoKVN",
-                MessageBoxButton.YesNo, MessageBoxImage.Warning,
-                MessageBoxResult.No) == MessageBoxResult.Yes;
-        if (!confirmed) return;
-
-        ruleDeleteBusy = true;
-        try
-        {
-            if (!rules.Remove(selected)) return;
-            try
-            {
-                UserStore.SaveRules(rules);
-            }
-            catch
-            {
-                rules.Add(selected);
-                RefreshRules();
-                throw;
-            }
-            RefreshRules();
-            RulesList.SelectedItem = null;
-            DomainBox.Clear();
-            RuleLabelBox.Clear();
-            RuleNodeBox.SelectedIndex = 0;
-            AppendLog("Удалено правило: " + selected.Domain);
-            await ReloadRulesSafeAsync();
-        }
-        catch (Exception ex)
-        {
-            AppendLog("Не удалось удалить правило: " + ex.GetType().Name);
-            ClientDialog.Show(this,
-                "Не удалось сохранить удаление правила. Проверь права доступа к настройкам.",
-                "ProstoKVN", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-        finally { ruleDeleteBusy = false; }
-    }
-    private async void Probe_Click(object sender, RoutedEventArgs e)
-    {
-        string domain = ProbeBox.Text.Trim().ToLowerInvariant();
-        if (!VpnCore.IsDomainSafe(domain)) { ProbeResult.Text = "Введите домен, например example.com"; return; }
-        if (!core.IsRunning) { ProbeResult.Text = "Сначала подключись."; return; }
-        ProbeResult.Text = "Проверяю два независимых маршрута...";
-        try
-        {
-            var check = await learner.ProbeDetailsAsync(domain);
-            RouteRule? effective = rules.Where(r => domain == r.Domain || domain.EndsWith("." + r.Domain, StringComparison.OrdinalIgnoreCase))
-                .OrderByDescending(r => r.Manual).ThenByDescending(r => r.Domain.Length).FirstOrDefault();
-            ProbeResult.Text = RouteAssessment.Describe(domain, check, effective);
-            AppendLog($"Проверка {domain}: прямой {check.Direct.State}, сервер {check.Vpn.State}.");
-        }
-        catch (Exception ex) { ProbeResult.Text = ex.Message; }
-    }
     private void ObserveDomainFromLog(string line)
     {
-        if (!core.IsRunning || settings.Mode != "smart" || AutoLearnBox.IsChecked != true) return;
+        if (!core.IsRunning || (activeSettings?.Mode ?? settings.Mode) != "smart" || AutoLearnBox.IsChecked != true) return;
         if (!line.Contains("-->") || line.Contains("vega-probe-", StringComparison.OrdinalIgnoreCase)) return;
         if (!line.Contains("[TCP]", StringComparison.OrdinalIgnoreCase)
             && !line.Contains("[UDP]", StringComparison.OrdinalIgnoreCase)
@@ -1593,11 +1260,12 @@ public partial class MainWindow : Window
             + $" (Discord: {snapshot.DiscordUdpConnections})"
             + $" • ↑ {Speed(snapshot.UdpUpBytesPerSecond)}"
             + $" ↓ {Speed(snapshot.UdpDownBytesPerSecond)}";
+        QualityUpdateUdp(snapshot);
     }
 
     private async Task LearnTickAsync()
     {
-        if (testing || !core.IsRunning || settings.Mode != "smart" || AutoLearnBox.IsChecked != true) return;
+        if (testing || !core.IsRunning || (activeSettings?.Mode ?? settings.Mode) != "smart" || AutoLearnBox.IsChecked != true) return;
         testing = true;
         try
         {

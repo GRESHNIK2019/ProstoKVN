@@ -4,6 +4,21 @@ using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using ProstoKVN;
+if (Environment.GetEnvironmentVariable("PROSTOKVN_CLIENT_SHELL_TEST") == "1")
+{
+    ClientShellTests.Run();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_THREE_ROUTING_MODES_TEST") == "1")
+{
+    await ThreeRoutingModesTests.RunAsync();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_ROUTING_REFACTOR_TEST") == "1")
+{
+    await RoutingRefactorTests.RunAsync();
+    return;
+}
 if (Environment.GetEnvironmentVariable("PROSTOKVN_LAYOUT_BASELINE") == "1")
 {
     LayoutRedesignTests.RunBaseline();
@@ -136,6 +151,26 @@ if (Environment.GetEnvironmentVariable("PROSTOKVN_COMPACT_UI_TEST") == "1")
 if (Environment.GetEnvironmentVariable("PROSTOKVN_V025_TEST") == "1")
 {
     await Version025Tests.RunAsync();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_UI_BOOT_PROBE") == "1")
+{
+    UiBootProbe.Run();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_ONLY_MINE_MODE_TEST") == "1")
+{
+    OnlyMineModeTests.Run();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_QUALITY_DIAGNOSTICS_TEST") == "1")
+{
+    QualityDiagnosticsTests.Run();
+    return;
+}
+if (Environment.GetEnvironmentVariable("PROSTOKVN_TUN_DOMAIN_TEST") == "1")
+{
+    TunDomainTests.Run();
     return;
 }
 if (Environment.GetEnvironmentVariable("PROSTOKVN_RULE_CATEGORY_TEST") == "1")

@@ -13,6 +13,7 @@ public sealed class HotRulePlan
     public Dictionary<string, object?> Providers { get; } = new();
     public List<string> Rules { get; } = new();
     public int ManualRuleCount { get; set; }
+    public List<string> Targets { get; } = new();
     public Dictionary<string, string> Files { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, int> PhaseSlots { get; } = new(StringComparer.Ordinal);
 }
@@ -28,40 +29,17 @@ public static class HotRuleProviders
         IReadOnlyList<RouteRule> routeRules, AppSettings settings, HotRulePlan? previousPlan = null)
     {
         var plan = new HotRulePlan();
-        var chosen = nodes.FirstOrDefault(x => x.Name == settings.SelectedNode) ?? nodes[0];
-        var targets = BaseTargets.Concat(routeRules
-            .Where(r => r.Route == "VEGA" && !string.IsNullOrWhiteSpace(r.PreferredNode))
-            .Select(r => r.PreferredNode)
-            .Where(name => nodes.Any(n => n.Name == name)))
+        var availableTargets = BaseTargets.Concat(nodes.Select((_, i) => RoutingPolicy.NodeTarget(nodes, i)))
+            .ToHashSet(StringComparer.Ordinal);
+        var targets = BaseTargets.Concat(previousPlan?.Targets.Where(availableTargets.Contains) ?? Enumerable.Empty<string>())
+            .Concat(routeRules.Where(r => r.Route == "VEGA").Select(r => RoutingPolicy.Target(r, nodes, settings)))
             .Distinct(StringComparer.Ordinal).ToArray();
-
-        int Priority(string value)
-        {
-            if (!RouteTarget.TryParse(value, out var t)) return -1;
-            return t.Priority;
-        }
-
-        string Target(RouteRule rule)
-        {
-            if (rule.Route == "REJECT") return "REJECT";
-            if (rule.Route != "VEGA") return "DIRECT";
-            var preferred = nodes.FirstOrDefault(n => n.Name == rule.PreferredNode);
-            if (preferred != null && (preferred.Name == chosen.Name ||
-                !(preferred.NativeXrayConfig != null && preferred.Values.ContainsKey("reality-opts"))))
-                return preferred.Name;
-            return "VEGA";
-        }
+        plan.Targets.AddRange(targets);
 
         foreach (string phase in new[] { "manual", "auto" })
         {
-            IEnumerable<RouteRule> candidates = phase == "manual"
-                ? routeRules.Where(r => r.Manual)
-                : settings.Mode == "smart"
-                    ? routeRules.Where(r => !r.Manual && (r.Route == "VEGA" || r.Route == "DIRECT")
-                        && !RuDomainPolicy.IsRuDomain(r.Domain))
-                    : Enumerable.Empty<RouteRule>();
-            var ordered = candidates.OrderByDescending(r => Priority(r.Domain))
-                .Select(r => (rule: r, target: Target(r)))
+            var ordered = RoutingPolicy.Select(routeRules, settings.Mode, manual: phase == "manual")
+                .Select(r => (rule: r, target: RoutingPolicy.Target(r, nodes, settings)))
                 .Where(item => RouteTarget.TryParse(item.rule.Domain, out _))
                 .ToList();
             var runs = new List<(string target, List<string> patterns, List<RouteTarget> matches)>();
@@ -119,7 +97,7 @@ public static class HotRuleProviders
     private static bool MayOverlap(RouteTarget left, RouteTarget right)
     {
         if (left.IsDomain && right.IsDomain)
-            return left.Matches(right.Value, null) || right.Matches(left.Value, null);
+            return left.Matches(right.DisplayValue, null) || right.Matches(left.DisplayValue, null);
         if (left.IsApplication && right.IsApplication)
         {
             if (left.Kind == RouteTargetKind.ProcessName)

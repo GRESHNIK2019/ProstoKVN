@@ -66,7 +66,9 @@ public static class ServiceRuleGrouper
             if (target.IsApplication) return "Приложения";            if (target.IsAddress) return "IP-адреса";
             if (target.IsSubnet) return "Подсети";
         }
-        return Find(domain)?.Service ?? "Другие сайты";
+        string normalizedDomain = RouteTarget.TryParse(domain, out var route) && route.IsDomain
+            ? route.DisplayValue : domain;
+        return Find(normalizedDomain)?.Service ?? "Другие сайты";
     }
 
     public static int CompactStableRules(List<RouteRule> rules)
@@ -76,7 +78,7 @@ public static class ServiceRuleGrouper
         {
             var matching = rules.Where(r => !r.Manual && !r.Provisional
                 && r.ExpiresUtc == null && RouteTarget.TryParse(r.Domain, out var t)
-                && t.IsDomain && IsWithin(t.Value, root)).ToList();
+                && t.Kind == RouteTargetKind.Domain && IsWithin(t.Value, root)).ToList();
             if (matching.Count < 2) continue;
             if (matching.Select(x => x.Route).Distinct(StringComparer.OrdinalIgnoreCase).Count() != 1
                 || matching.Select(x => x.PreferredNode).Distinct(StringComparer.OrdinalIgnoreCase).Count() != 1)

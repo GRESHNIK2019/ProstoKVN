@@ -8,15 +8,18 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
-    <Version>0.34.2</Version>
-    <AssemblyVersion>0.34.2.0</AssemblyVersion>
-    <FileVersion>0.34.2.0</FileVersion>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Version>0.35.2</Version>
+    <AssemblyVersion>0.35.2.0</AssemblyVersion>
+    <FileVersion>0.35.2.0</FileVersion>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <ApplicationIcon>Assets\ProstoKVN.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
     <Resource Include="Assets\ProstoKVN.ico" />
   </ItemGroup>

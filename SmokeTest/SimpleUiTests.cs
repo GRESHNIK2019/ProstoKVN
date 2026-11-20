@@ -32,7 +32,7 @@ public static class SimpleUiTests
     static void Save(MainWindow w, string name)
     {
         Pump(w);
-        string directory = Environment.GetEnvironmentVariable("PROSTOKVN_SIMPLE_PREVIEW")!;
+        string directory = Environment.GetEnvironmentVariable("PROSTOKVN_SIMPLE_PREVIEW") ?? UserStore.Home;
         Directory.CreateDirectory(directory);
         var bitmap = new RenderTargetBitmap((int)w.ActualWidth, (int)w.ActualHeight, 96, 96, PixelFormats.Pbgra32);
         bitmap.Render(w);
@@ -106,7 +106,7 @@ public static class SimpleUiTests
                 Invoke(w, "HideOnboarding");
                 var tabs = Get<TabControl>(w, "MainTabs");
                 Check(tabs.Items.Cast<TabItem>().Select(t => (string)t.Header).SequenceEqual(new[] {
-                    "Подключение", "Подписки", "Правила", "Настройки", "Помощь" }), "Task-based navigation is in expected order");
+                    "Подключение", "Подписки", "Маршрутизация", "Настройки", "Диагностика" }), "Task-based navigation is in expected order");
                 Check(w.Width >= w.MinWidth && w.Width <= 1040 && w.Height >= w.MinHeight && w.Height <= 740,
                     "Window starts within the desktop with a spacious default size");
                 Check(System.Windows.Shell.WindowChrome.GetWindowChrome(w)?.CaptionHeight == 52,
@@ -146,7 +146,7 @@ public static class SimpleUiTests
                     && Get<Button>(w, "ConnectButton").Content.ToString() == "Отключиться", "Verified connection has one disconnect action");
                 Save(w, "04-connected");
                 HomeFits(w, "Connected home");
-                Get<ComboBox>(w, "ModeBox").SelectedIndex = 1;
+                Get<ComboBox>(w, "ModeBox").SelectedValue = "vpn";
                 Pump(w);
                 Check(Get<Border>(w, "PendingSettingsBanner").Visibility == Visibility.Visible,
                     "Mode changes require visible explicit application");
@@ -162,23 +162,18 @@ public static class SimpleUiTests
                 Save(w, "04a-minimum-busy-pending");
                 Set(w, "connectionBusy", false);
                 Invoke(w, "UpdateConnectionUi");
-                w.Width = 660;
-                tabs.SelectedIndex = 3;
+                tabs.SelectedIndex = 2;
                 Pump(w);
-                Check(Get<Button>(w, "ApplySettingsButton").IsVisible, "Settings provide an apply action for the active connection");
-                Get<ComboBox>(w, "ModeBox").SelectedIndex = 0;
-                Check(Get<Border>(w, "PendingSettingsBanner").Visibility == Visibility.Collapsed,
-                    "Reverting pending settings removes the apply banner");
+                Check(Get<Button>(w, "ApplyRulesButton").IsVisible, "Routing provides the apply action beside the changed settings");
+                Get<Button>(w, "ApplyRulesButton").BringIntoView(); Pump(w);
+                var applyBounds = Get<Button>(w,"ApplyRulesButton").TransformToAncestor(w).TransformBounds(new Rect(Get<Button>(w,"ApplyRulesButton").RenderSize));
+                Check(applyBounds.Bottom<w.ActualHeight && applyBounds.Top>=52, "Pending changes remain reachable in a short window");
+                Get<ComboBox>(w, "ModeBox").SelectedValue = "smart";
+                Check(Get<Border>(w, "PendingSettingsBanner").Visibility == Visibility.Collapsed, "Reverting pending settings removes the apply banner");
                 typeof(VpnCore).GetField("process", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(core, null);
                 Set(w, "vpnExitVerified", false);
                 Invoke(w, "UpdateConnectionUi");
-                Save(w, "05-settings");
-                var settingsScroll = (ScrollViewer)((TabItem)tabs.SelectedItem).Content;
-                Get<Button>(w, "ApplySettingsButton").BringIntoView(); Pump(w);
-                var applyBounds=Get<Button>(w,"ApplySettingsButton").TransformToAncestor(w)
-                    .TransformBounds(new Rect(Get<Button>(w,"ApplySettingsButton").RenderSize));
-                Check(applyBounds.Bottom<w.ActualHeight && applyBounds.Top>=52,
-                    "Pending settings action stays reachable in a short window");
+                Save(w, "05-routing");
                 tabs.SelectedIndex = 2;
                 Set(w, "rules", new List<RouteRule> {
                     new() { Domain = "example.com", Label = "Работа", Route = "VEGA", Manual = true },
@@ -199,6 +194,7 @@ public static class SimpleUiTests
                 Check(Get<TextBox>(w, "DomainBox").Text == "" && Get<ComboBox>(w, "RuleRouteBox").SelectedIndex == 1,
                     "New rule clears the selection and defaults to VPN");
                 Save(w, "06-rules");
+                Invoke(w, "CloseRuleEditor_Click", null, new RoutedEventArgs());
                 tabs.SelectedIndex = 4;
                 Pump(w);
                 Check(Get<TextBlock>(w, "StatusLabel").IsVisible && !Get<Expander>(w, "LogSection").IsExpanded,
