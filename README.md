@@ -1,12 +1,12 @@
-# ProstoKVN / VEGA VPN — Windows client 0.35.2
+# ProstoKVN / VEGA VPN — Windows client 0.35.3
 
 Клиент для Windows 10/11 x64: WPF / .NET 10, Mihomo для маршрутизации, Xray и sing-box для совместимых транспортов. Существующие подписки и формат `routes.json` сохраняются.
 
 ## Скачать
 
-- [Установщик Windows x64](https://github.com/GRESHNIK2019/ProstoKVN/releases/download/v0.35.2/ProstoKVN-Setup-0.35.2-UNSIGNED.exe)
-- [Портативный ZIP](https://github.com/GRESHNIK2019/ProstoKVN/releases/download/v0.35.2/ProstoKVN-v0.35.2-win-x64.zip)
-- [Описание релиза и SHA-256](https://github.com/GRESHNIK2019/ProstoKVN/releases/tag/v0.35.2)
+- [Установщик Windows x64](https://github.com/GRESHNIK2019/ProstoKVN/releases/download/v0.35.3/ProstoKVN-Setup-0.35.3-UNSIGNED.exe)
+- [Портативный ZIP](https://github.com/GRESHNIK2019/ProstoKVN/releases/download/v0.35.3/ProstoKVN-v0.35.3-win-x64.zip)
+- [Описание релиза и SHA-256](https://github.com/GRESHNIK2019/ProstoKVN/releases/tag/v0.35.3)
 
 .NET включён в пакет. Цифровая подпись издателя отсутствует; установщик помечен `UNSIGNED`.
 
@@ -32,6 +32,10 @@
 2. Добавьте нужные сайты / приложения и выберите VPN, напрямую или блокировку.
 3. Оставьте включённым переключатель **Включить в режим «Только выбранное»** для нужных правил.
 4. Подключитесь. Если уже подключены и меняли режим или параметры сети, нажмите **Применить**.
+
+Для YouTube нажмите **Включить YouTube** в разделе **Сайты и IP**. Набор включает сайт, видеосерверы, обложки и API плеера; правила появляются в группе YouTube. Автоматически найденные адреса из умного режима сами не включаются в выбранное. Ручные исключения сохраняют приоритет. Перезагрузите вкладку с роликом после применения правил.
+
+Состав адресов API сверяется с [документацией Google](https://knowledge.workspace.google.com/admin/youtube/control-youtube-content-available-to-users); разделение сайта и видеосерверов описано в [документации Cisco](https://www.cisco.com/c/en/us/support/docs/application-networking-services/wide-area-application-services-waas-software/201014-Configure-Youtube-Traffic-Optimization-w.pdf).
 
 В этом режиме используется TUN; запуск от имени администратора обязателен. Весь остальной трафик идёт напрямую. Скрытых правил VPN для Discord, Telegram и AI-сервисов в раздельном режиме нет. Старые ручные правила включены по умолчанию; автоматически созданные правила требуют явного включения.
 
@@ -66,6 +70,8 @@ $env:PROSTOKVN_ROUTING_REFACTOR_TEST = '1'
 
 Проверка трёх режимов и переноса старых настроек: `PROSTOKVN_THREE_ROUTING_MODES_TEST=1` (также нужен отдельный `PROSTOKVN_TEST_HOME`). Она сравнивает маршруты до и после переноса, проверяет приоритеты, повторный запуск, резервные копии, откат при ошибке записи и интерфейс.
 
+Проверка YouTube и выбранных видеосерверов: `PROSTOKVN_YOUTUBE_ROUTING_TEST=1` с отдельным `PROSTOKVN_TEST_HOME`. Тестовые HTTP-запросы проходят через локальный SOCKS-сервер и отдельный Mihomo без включения TUN.
+
 Проверка группировки, поиска и трея: `PROSTOKVN_CLIENT_SHELL_TEST=1` с отдельным `PROSTOKVN_TEST_HOME`.
 
 Исходники маршрутизации: `ProstoKVN/RoutingPolicy.cs`, `HotRuleProviders.cs`, `VpnCore.cs`. Интерфейс правил: `MainWindow.Routing.cs` и `MainWindow.xaml`.
@@ -74,6 +80,6 @@ $env:PROSTOKVN_ROUTING_REFACTOR_TEST = '1'
 
 Настройки находятся в `%LOCALAPPDATA%\ProstoKVN`; старые данные `%LOCALAPPDATA%\VEGA VPN` импортируются без перезаписи новых настроек. URL подписок защищены DPAPI текущего пользователя Windows. `config.yaml` и файлы sidecar могут содержать данные подключения — не публикуйте их.
 
-Готовая локальная сборка: `dist/ProstoKVN-v0.35.2-win-x64/ProstoKVN.exe`. .NET включён в сборку.
+Готовая локальная сборка: `dist/ProstoKVN-v0.35.3-win-x64/ProstoKVN.exe`. .NET включён в сборку.
 
 Документация формата правил и API: [Mihomo routing](https://wiki.metacubex.one/en/config/rules/), [Mihomo API](https://wiki.metacubex.one/api/).

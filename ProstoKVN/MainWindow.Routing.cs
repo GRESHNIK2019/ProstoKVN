@@ -83,6 +83,36 @@ public partial class MainWindow
         ApplyRulesButton.Visibility = HasPendingConnectionSettings ? Visibility.Visible : Visibility.Collapsed;
         RulesApplyStatus.SetResourceReference(TextBlock.ForegroundProperty,
             rulesApplyError != null || HasPendingConnectionSettings ? "StatusWarning" : "TextMuted");
+        UpdateYouTubePresetUi();
+    }
+
+    private void UpdateYouTubePresetUi()
+    {
+        if (YouTubePresetCard == null) return;
+        YouTubePresetCard.Visibility = settings.Mode == "mine" && !applicationRulePage
+            ? Visibility.Visible : Visibility.Collapsed;
+        int count = YouTubeRouting.ActiveDomainCount(rules, settings.Mode);
+        YouTubePresetStatus.Text = $"Через VPN: {count} из {YouTubeRouting.Domains.Count} адресов сервиса. Ручные исключения имеют приоритет.";
+        EnableYouTubeButton.IsEnabled = count < YouTubeRouting.Domains.Count;
+        EnableYouTubeButton.Content = EnableYouTubeButton.IsEnabled ? "Включить YouTube" : "YouTube включён";
+    }
+
+    private async void EnableYouTube_Click(object sender, RoutedEventArgs e)
+    {
+        var updated = YouTubeRouting.Enable(rules);
+        try { UserStore.SaveRules(updated); }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+            rulesApplyError = "Не удалось сохранить правила YouTube: " + ex.Message;
+            UpdateRoutingUi();
+            return;
+        }
+        rules = updated;
+        RuleSourceBox.SelectedIndex = 0;
+        RuleSearchBox.Text = "YouTube";
+        RefreshRules();
+        AppendLog("Включён набор YouTube: сайт, видеосерверы, обложки и API. Ручные исключения сохранены.");
+        await ReloadRulesSafeAsync();
     }
 
     private void RuleSearch_Changed(object sender, TextChangedEventArgs e)
@@ -137,6 +167,7 @@ public partial class MainWindow
             : "Сайты и IP не найдены. Измените поиск или добавьте правило.";
         RuleSearchBox.Text = applications ? applicationRuleQuery : siteRuleQuery;
         UpdateRuleCategoryButtons();
+        UpdateYouTubePresetUi();
         RefreshRules();
         RulesPageScroll.ScrollToTop();
     }

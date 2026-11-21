@@ -4,6 +4,11 @@ using System.Net;
 using System.Net.Http;
 using System.Text.Json;
 using ProstoKVN;
+if (Environment.GetEnvironmentVariable("PROSTOKVN_YOUTUBE_ROUTING_TEST") == "1")
+{
+    await YouTubeRoutingTests.RunAsync();
+    return;
+}
 if (Environment.GetEnvironmentVariable("PROSTOKVN_CLIENT_SHELL_TEST") == "1")
 {
     ClientShellTests.Run();
