@@ -67,6 +67,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         InitializeQualityDiagnostics();
+        InitializeLiveRoutes();
         // Keep the first window inside the usable desktop at high display scaling.
         var workArea = SystemParameters.WorkArea;
         MinWidth = Math.Min(MinWidth, Math.Max(400, workArea.Width - 32));
@@ -190,6 +191,8 @@ public partial class MainWindow : Window
             args.Cancel = true;
             if (isWindowClosing) return;
             isWindowClosing = true;
+            liveRoutesTimer.Stop();
+            liveRoutesCancellation.Cancel();
             ResetServerLatencySession();
             StopQualityDiagnostics();
             recovery.Disable();
@@ -264,6 +267,7 @@ public partial class MainWindow : Window
             : !active ? "Выберите сервер и подключитесь."
             : pending ? "Новые настройки ещё не применены."
             : appliedMode == "direct" ? "Трафик идёт напрямую."
+            : appliedMode == "mine" ? "VPN только для выбранных правил. Остальной трафик — DIRECT."
             : vpnExitVerified ? "Доступ через VPN подтверждён."
             : "VPN-выход ещё не подтверждён.";
         ConnectButton.Content = connectionBusy ? "Подключаемся…" : active || desired ? "Отключиться"

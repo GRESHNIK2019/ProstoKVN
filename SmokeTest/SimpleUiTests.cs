@@ -106,7 +106,7 @@ public static class SimpleUiTests
                 Invoke(w, "HideOnboarding");
                 var tabs = Get<TabControl>(w, "MainTabs");
                 Check(tabs.Items.Cast<TabItem>().Select(t => (string)t.Header).SequenceEqual(new[] {
-                    "Подключение", "Подписки", "Маршрутизация", "Настройки", "Диагностика" }), "Task-based navigation is in expected order");
+                    "Подключение", "Подписки", "Маршрутизация", "Настройки", "Мониторинг" }), "Task-based navigation is in expected order");
                 Check(w.Width >= w.MinWidth && w.Width <= 1040 && w.Height >= w.MinHeight && w.Height <= 740,
                     "Window starts within the desktop with a spacious default size");
                 Check(System.Windows.Shell.WindowChrome.GetWindowChrome(w)?.CaptionHeight == 52,

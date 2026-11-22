@@ -24,6 +24,8 @@ public sealed class VpnCore : IDisposable
     private readonly string secret = Guid.NewGuid().ToString("N");
     private string? lastAppliedConfig;
     private HotRulePlan? lastHotPlan;
+    private string[] currentTunExclusions = Array.Empty<string>();
+    public IReadOnlyList<string> CurrentTunExclusions => currentTunExclusions;
     private readonly int controllerPort;
     public VpnCore(int controllerPort = ApiPort, HttpMessageHandler? apiHandler = null)
     {
@@ -216,8 +218,21 @@ public sealed class VpnCore : IDisposable
         };
         if (hotPlan != null)
             result["rule-providers"] = hotPlan.Providers;
+        var exclusions = RoutingPolicy.TunExclusions(routeRules, settings.Mode);
+        if (settings.Tun && exclusions.Length > 0)
+            ((Dictionary<string, object?>)result["tun"]!)["route-exclude-address"] = exclusions;
         return result;
     }
+    public async Task<string> ReadConnectionsAsync(CancellationToken cancellation = default)
+    {
+        if (!IsRunning) throw new InvalidOperationException("Нет активного подключения.");
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{controllerPort}/connections");
+        request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + secret);
+        using var response = await api.SendAsync(request, cancellation);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync(cancellation);
+    }
+    public IReadOnlyDictionary<string, string>? CurrentProviderFiles => lastHotPlan?.Files;
     public async Task StartAsync(IReadOnlyList<ProxyNode> nodes, List<RouteRule> rules, AppSettings settings)
     {
         settings = RoutingPolicy.Snapshot(settings);
@@ -275,6 +290,7 @@ public sealed class VpnCore : IDisposable
         await Task.Delay(1300);
         if (process.HasExited) throw new InvalidOperationException("Сетевое ядро завершилось при запуске — смотри журнал.");
         lastAppliedConfig = initialConfig;
+        currentTunExclusions = settings.Tun ? RoutingPolicy.TunExclusions(rules, settings.Mode) : Array.Empty<string>();
         if (!settings.Tun && !RoutingPolicy.RequiresTun(settings.Mode) && settings.Mode != "direct") EnableSystemProxy();
         OnLog?.Invoke("ProstoKVN запущен. Режим: " + settings.Mode + (settings.Tun ? " (TUN)" : " (системный прокси)"));
         }
@@ -290,7 +306,7 @@ public sealed class VpnCore : IDisposable
         RestoreSystemProxy();
         try { if (IsRunning) { process!.Kill(entireProcessTree: true); process.WaitForExit(3000); } }
         catch { }
-        finally { process?.Dispose(); process = null; xray.Stop(); singBox.Stop(); activeEngine = TunnelEngine.Mihomo; lastAppliedConfig = null; lastHotPlan = null; }
+        finally { process?.Dispose(); process = null; xray.Stop(); singBox.Stop(); activeEngine = TunnelEngine.Mihomo; lastAppliedConfig = null; lastHotPlan = null; currentTunExclusions = Array.Empty<string>(); }
     }
     private void EnableSystemProxy()
     {

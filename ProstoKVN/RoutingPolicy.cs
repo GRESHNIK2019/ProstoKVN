@@ -14,6 +14,12 @@ public static class RoutingPolicy
         SelectedNode = s.SelectedNode, ProtectedUrl = s.ProtectedUrl, Theme = s.Theme
     };
     public static bool IsCurrent(RouteRule rule) => rule.Manual || !rule.ExpiresUtc.HasValue || rule.ExpiresUtc > DateTime.UtcNow;
+    public static bool IsTunBypass(RouteRule rule) => rule.Manual && rule.BypassTun && rule.Route == "DIRECT"
+        && RouteTarget.TryParse(rule.Domain, out var target) && target.IsAddress;
+    public static string[] TunExclusions(IEnumerable<RouteRule> rules, string mode)
+        => Select(rules, mode, true).Where(IsTunBypass)
+            .Select(r => { RouteTarget.TryParse(r.Domain, out var target); return target.MihomoValue; })
+            .Distinct(StringComparer.Ordinal).OrderBy(x => x, StringComparer.Ordinal).ToArray();
     public static IEnumerable<RouteRule> Select(IEnumerable<RouteRule> rules, string mode, bool manual)
     {
         mode = NormalizeMode(mode);
@@ -23,7 +29,7 @@ public static class RoutingPolicy
                 && (manual ? (mode == "mine" ? r.IncludedInMine : r.Manual)
                     : mode == "smart" && !r.Manual && (r.Route is "DIRECT" or "VEGA")
                         && !RuDomainPolicy.IsRuDomain(r.Domain)))
-            .OrderBy(r => string.IsNullOrEmpty(r.Preset) ? 0 : 1)
+            .OrderBy(r => IsTunBypass(r) ? -1 : string.IsNullOrEmpty(r.Preset) ? 0 : 1)
             .ThenByDescending(r => { RouteTarget.TryParse(r.Domain, out var t); return t.Priority; })
             .ThenByDescending(r => r.UpdatedUtc);
     }

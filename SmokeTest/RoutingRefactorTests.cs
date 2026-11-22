@@ -144,6 +144,8 @@ public static class RoutingRefactorTests
             await Task.Delay(100);
         }
         Check(ready,"Isolated live Mihomo API started");
+        Check(new LiveConnectionMonitor().Read(await core.ReadConnectionsAsync(), DateTime.UtcNow).Count == 0,
+            "Live monitor reads the authenticated isolated controller without including diagnostic traffic");
         var updated=new List<RouteRule>{new(){Domain="live.example.test",Route="REJECT",Manual=true}};
         Check(await core.ReloadRoutesAsync(nodes,updated,settings)==RouteReloadResult.Applied, "Real live provider update returns Applied");
         Check(await core.ReloadRoutesAsync(nodes,updated,settings)==RouteReloadResult.Unchanged, "Identical update returns Unchanged");

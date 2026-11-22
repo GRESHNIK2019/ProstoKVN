@@ -84,6 +84,9 @@ public partial class MainWindow
         RulesApplyStatus.SetResourceReference(TextBlock.ForegroundProperty,
             rulesApplyError != null || HasPendingConnectionSettings ? "StatusWarning" : "TextMuted");
         UpdateYouTubePresetUi();
+        RoutingActiveStatus.Text = !core.IsRunning ? "Сейчас: отключено. Правила начнут работать после подключения."
+            : HasPendingConnectionSettings ? $"Сейчас: {RoutingModes.Title(appliedMode ?? "smart")}. Есть изменения — нажмите «Применить»."
+            : $"Сейчас работает: {RoutingModes.Title(appliedMode ?? settings.Mode)}.";
     }
 
     private void UpdateYouTubePresetUi()
@@ -174,6 +177,7 @@ public partial class MainWindow
 
     private void NewRule_Click(object sender, RoutedEventArgs e)
     {
+        BypassTunBox.IsChecked = false;
         RulesList.SelectedItem = null;
         editingRule = null;
         RuleTargetKindBox.SelectedIndex = applicationRulePage ? 1 : 0;
@@ -247,6 +251,7 @@ public partial class MainWindow
     {
         if (RuleNodeBox == null) return;
         RuleNodeBox.IsEnabled = ((RuleRouteBox.SelectedItem as ComboBoxItem)?.Tag as string) == "VEGA";
+        UpdateDomainScopeVisibility();
     }
     private bool IsApplicationRule => RuleTargetKindBox.SelectedIndex == 1;
 
@@ -281,6 +286,10 @@ public partial class MainWindow
         bool isDomain = !IsApplicationRule
             && RouteTarget.TryParseUserInput(DomainBox.Text, out var target) && target.IsDomain;
         DomainScopeSection.Visibility = isDomain ? Visibility.Visible : Visibility.Collapsed;
+        if (BypassTunSection != null)
+            BypassTunSection.Visibility = !IsApplicationRule && RouteTarget.TryParseUserInput(DomainBox.Text, out var address)
+                && address.IsAddress && ((RuleRouteBox.SelectedItem as ComboBoxItem)?.Tag as string) == "DIRECT"
+                    ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void ChooseApplication_Click(object sender, RoutedEventArgs e)
@@ -334,6 +343,7 @@ public partial class MainWindow
         UpdateDomainScopeVisibility();
         RuleLabelBox.Text = selected.Label ?? "";
         MyRuleEnabledBox.IsChecked = selected.IncludedInMine;
+        BypassTunBox.IsChecked = selected.BypassTun;
         for (int i = 0; i < RuleRouteBox.Items.Count; i++)
         {
             if ((RuleRouteBox.Items[i] as ComboBoxItem)?.Tag as string == selected.Route)
@@ -428,7 +438,8 @@ public partial class MainWindow
             Route = route,
             PreferredNode = preferred,
             Manual = true,
-            MyRuleEnabled = MyRuleEnabledBox.IsChecked == true
+            MyRuleEnabled = MyRuleEnabledBox.IsChecked == true,
+            BypassTun = route == "DIRECT" && target.IsAddress && BypassTunBox.IsChecked == true
         });
         try { UserStore.SaveRules(updatedRules); }
         catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
@@ -451,6 +462,22 @@ public partial class MainWindow
         AddRuleSection.IsExpanded = false;
         await ReloadRulesSafeAsync();
     }
+    private async void RuleEnabled_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not CheckBox { DataContext: RouteRule rule } box || !rules.Contains(rule)) return;
+        var updated = rules.Select(r => r.Snapshot()).ToList();
+        updated[rules.IndexOf(rule)].MyRuleEnabled = box.IsChecked == true;
+        try { UserStore.SaveRules(updated); }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+        {
+            rulesApplyError = "Не удалось сохранить выбор: " + ex.Message;
+            RefreshRules(); UpdateRoutingUi(); return;
+        }
+        rules = updated;
+        RefreshRules();
+        await ReloadRulesSafeAsync();
+    }
+
     private async void AutoRoute_Click(object sender, RoutedEventArgs e)
     {
         string domain = ProbeBox.Text.Trim().TrimEnd('.').ToLowerInvariant();

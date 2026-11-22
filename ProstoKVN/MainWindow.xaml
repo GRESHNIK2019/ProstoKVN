@@ -209,6 +209,9 @@
      </Grid>
      <TextBlock x:Name="ModeDescription" Style="{StaticResource FormHint}"/>
      <TextBlock x:Name="RoutingSummary" Style="{StaticResource FormHint}" Foreground="{DynamicResource AccentText}"/>
+     <TextBlock x:Name="RoutingActiveStatus" Style="{StaticResource FormHint}" FontWeight="SemiBold"/>
+     <TextBlock Text="Галочка в списке включает правило в «Только выбранное». VPN у приложения действует на все его соединения; отдельные сайты добавляются во вкладке «Сайты и IP»." Style="{StaticResource FormHint}"/>
+     <Button Content="Открыть мониторинг маршрутов" Click="LiveRoutesLink_Click" HorizontalAlignment="Left" Style="{StaticResource TertiaryButton}" Margin="0,12,0,0"/>
      <Expander x:Name="RoutingSection" Header="Автоматические маршруты" Style="{StaticResource SubSectionStyle}" IsExpanded="False"><StackPanel>
       <CheckBox x:Name="AutoLearnBox" Content="Находить сайты, которым нужен VPN" IsChecked="True" Click="SettingsChanged_Click"/>
       <TextBlock Text="Работает в умном режиме: маршрут меняется после проверки доступности напрямую и через VPN." Style="{StaticResource FormHint}"/>
@@ -287,6 +290,7 @@
                  <ColumnDefinition Width="4"/>
                  <ColumnDefinition Width="*"/>
                  <ColumnDefinition Width="Auto"/>
+                 <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <Border x:Name="RuleSelectedMarker" Grid.Column="0"
                         Background="{DynamicResource RuleSelectedAccent}"
@@ -305,6 +309,10 @@
                  </Style.Triggers></Style></Border.Style>
                  <TextBlock Text="{Binding RouteCaption}" FontSize="11" FontWeight="SemiBold"/>
                 </Border>
+                <CheckBox Grid.Column="3" IsChecked="{Binding IncludedInMine,Mode=OneWay}" Click="RuleEnabled_Click" Margin="12,0,0,0" VerticalAlignment="Center"
+                 ToolTip="Включить это правило в режим «Только выбранное»" AutomationProperties.Name="Включить правило в выбранное">
+                 <CheckBox.Style><Style TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding SelectedValue,ElementName=ModeBox}" Value="mine"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers></Style></CheckBox.Style>
+                </CheckBox>
                </Grid>
               </Border>
               <ControlTemplate.Triggers>
@@ -385,9 +393,39 @@
     </StackPanel></Expander>
    </StackPanel></ScrollViewer>
   </TabItem>
-  <TabItem Header="Диагностика" Tag="&#xE897;">
+  <TabItem Header="Мониторинг" Tag="&#xE897;">
    <ScrollViewer x:Name="HelpPageScroll" Style="{StaticResource PageScroll}"><StackPanel Style="{StaticResource PageStack}">
-    <TextBlock Text="Помощь и диагностика" Style="{StaticResource PageTitle}"/><TextBlock Text="Проверка подключения, маршрутов и журнал событий — в одном месте." Style="{StaticResource PageDescription}"/>
+    <TextBlock Text="Мониторинг и диагностика" Style="{StaticResource PageTitle}"/><TextBlock Text="Здесь видно, какие соединения действительно идут через VPN, а какие — напрямую." Style="{StaticResource PageDescription}"/>
+    <Border Style="{StaticResource Card}"><StackPanel>
+     <TextBlock Text="Живые соединения" Style="{StaticResource FieldLabel}"/>
+     <TextBlock x:Name="LiveRoutesStatus" Text="Подключитесь, чтобы увидеть маршруты." Style="{StaticResource FormHint}"/>
+     <TextBlock x:Name="LiveRoutesCounts" Style="{StaticResource FormHint}" Foreground="{DynamicResource AccentText}"/>
+     <TextBlock x:Name="LiveBypassStatus" Style="{StaticResource FormHint}"/>
+     <TextBlock Text="Поиск приложения, домена или IP" Style="{StaticResource FieldLabel}" Margin="0,12,0,0"/>
+     <DockPanel Margin="0,12,0,10">
+      <ComboBox x:Name="LiveRoutesFilter" DockPanel.Dock="Right" Width="140" SelectedIndex="0" Margin="10,0,0,0" SelectionChanged="LiveRoutesFilter_Changed" AutomationProperties.Name="Фильтр маршрутов">
+       <ComboBoxItem Content="Все маршруты" Tag="all"/><ComboBoxItem Content="Через VPN" Tag="VPN"/><ComboBoxItem Content="Напрямую" Tag="DIRECT"/><ComboBoxItem Content="Блокировка" Tag="Блокировка"/><ComboBoxItem Content="Неизвестно" Tag="Неизвестно"/>
+      </ComboBox>
+      <TextBox x:Name="LiveRoutesSearch" TextChanged="LiveRoutesFilter_Changed" ToolTip="Поиск по приложению, домену, IP или правилу" AutomationProperties.Name="Поиск соединений"/>
+     </DockPanel>
+     <TextBlock x:Name="LiveRoutesEmpty" Text="Активных соединений по этому фильтру нет." Style="{StaticResource FormHint}"/>
+     <ListBox x:Name="LiveRoutesList" Height="340" Background="{DynamicResource SurfaceRaised}" Foreground="{DynamicResource TextPrimary}" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+      <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem"><Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="10"/><Setter Property="Margin" Value="0,0,0,2"/><Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/></Style></ListBox.ItemContainerStyle>
+      <ListBox.ItemTemplate><DataTemplate><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+       <StackPanel Margin="0,0,10,0">
+        <TextBlock Text="{Binding Owner}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+        <TextBlock Text="{Binding Target}" FontSize="12" Margin="0,3,0,0" TextTrimming="CharacterEllipsis" ToolTip="{Binding Target}"/>
+        <TextBlock Text="{Binding Address}" FontSize="10" Foreground="{DynamicResource TextMuted}"/>
+        <TextBlock Text="{Binding Rule}" FontSize="10" Foreground="{DynamicResource TextMuted}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Rule}"/>
+       </StackPanel>
+       <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
+        <Border CornerRadius="6" Padding="8,4" HorizontalAlignment="Right"><Border.Style><Style TargetType="Border"><Setter Property="Background" Value="{DynamicResource Surface}"/><Style.Triggers><DataTrigger Binding="{Binding Route}" Value="VPN"><Setter Property="Background" Value="{DynamicResource AccentSoft}"/></DataTrigger><DataTrigger Binding="{Binding Route}" Value="Неизвестно"><Setter Property="Background" Value="{DynamicResource WarningSoft}"/></DataTrigger></Style.Triggers></Style></Border.Style><TextBlock Text="{Binding Route}" FontSize="11" FontWeight="SemiBold"/></Border>
+        <TextBlock Text="{Binding Speed}" FontSize="10" Margin="0,6,0,0" Foreground="{DynamicResource TextMuted}"/>
+       </StackPanel>
+      </Grid></DataTemplate></ListBox.ItemTemplate>
+     </ListBox>
+     <TextBlock Text="Маршрут взят из работающего ядра. DIRECT может проходить через локальный адаптер Meta, затем выходит напрямую. Служебные соединения ядер и проверки скрыты. IP, исключённые из TUN, в этом списке не видны. Данные не сохраняются и не отправляются." Style="{StaticResource FormHint}"/>
+    </StackPanel></Border>
     <Border Style="{StaticResource Card}"><StackPanel><TextBlock Text="Состояние" Style="{StaticResource FieldLabel}"/><TextBlock x:Name="StatusLabel" Text="Не подключено" TextWrapping="Wrap" FontSize="14"/><WrapPanel Margin="0,18,0,0"><Button Content="Добавить серверы" Click="SubscriptionsLink_Click" Style="{StaticResource TertiaryButton}" Margin="0,0,8,6"/><Button Content="Настроить маршрутизацию" Click="RoutingLink_Click" Style="{StaticResource TertiaryButton}" Margin="0,0,0,6"/></WrapPanel></StackPanel></Border>
     <Expander x:Name="ConnectionDetailsSection" Header="Сведения о подключении" Style="{StaticResource CompactSectionStyle}" IsExpanded="False"><StackPanel>
      <TextBlock x:Name="RecoveryText" Text="Подключитесь, чтобы начать проверку." Style="{StaticResource FormHint}" Margin="0,0,0,12"/><TextBlock x:Name="LatencyText" Text="HTTPS-задержка: нет данных" Style="{StaticResource FormHint}" Margin="0,0,0,12"/><TextBlock x:Name="UdpText" Text="UDP: нет данных" Style="{StaticResource FormHint}" Margin="0,0,0,12"/><TextBlock x:Name="EngineInfoLabel" Text="Ядро выбирается автоматически." Style="{StaticResource FormHint}" Margin="0,0,0,16"/>
@@ -463,6 +501,10 @@
       <TextBlock Text="Название · необязательно" Style="{StaticResource FieldLabel}"/><TextBox x:Name="RuleLabelBox" MaxLength="96" Margin="0,0,0,14"/>
       <TextBlock Text="Сервер VPN" Style="{StaticResource FieldLabel}"/><ComboBox x:Name="RuleNodeBox" IsEnabled="False"/>
      </StackPanel></Expander>
+     <StackPanel x:Name="BypassTunSection" Visibility="Collapsed" Margin="0,0,0,14">
+      <CheckBox x:Name="BypassTunBox" Content="Исключить этот IP из TUN"/>
+      <TextBlock Text="Для игровых серверов: этот IP идёт через сетевой адаптер без обработки TUN, для всех приложений и выше остальных правил. После изменения нажмите «Применить» для переподключения." Style="{StaticResource FormHint}"/>
+     </StackPanel>
      <CheckBox x:Name="MyRuleEnabledBox" Content="Включить в режим «Только выбранное»"
                IsChecked="True" Margin="0,0,0,12" ToolTip="В режиме «Только выбранное» применяются только включённые правила. В остальных режимах действуют все ручные правила."/>
      <TextBlock x:Name="RuleValidationText" Foreground="{DynamicResource StatusWarning}" TextWrapping="Wrap" Margin="0,0,0,12"><TextBlock.Style><Style TargetType="TextBlock"><Style.Triggers><Trigger Property="Text" Value=""><Setter Property="Visibility" Value="Collapsed"/></Trigger></Style.Triggers></Style></TextBlock.Style></TextBlock>

@@ -68,6 +68,8 @@ public sealed class RouteRule
     // null means an older record: legacy Manual rules remain included,
     // and automatically generated records remain excluded.
     public bool? MyRuleEnabled { get; set; }
+    // Explicit IP destination bypass for all applications, before other rules.
+    public bool BypassTun { get; set; }
     [JsonIgnore]
     public bool IncludedInMine => MyRuleEnabled ?? Manual;
     public bool Provisional { get; set; }
@@ -91,7 +93,8 @@ public sealed class RouteRule
         + (string.IsNullOrWhiteSpace(Label) ? "" : " · " + Label)
         + (string.IsNullOrWhiteSpace(PreferredNode) ? "" : " · " + PreferredNode)
         + (!string.IsNullOrEmpty(Preset) ? " · Набор правил" : !Manual ? " · Автоматическое" : "")
-        + (!IncludedInMine ? " · Не включено в «Только выбранное»" : "");
+        + (!IncludedInMine ? " · Не включено в «Только выбранное»" : "")
+        + (RoutingPolicy.IsTunBypass(this) ? " · Обход TUN для всех приложений" : "");
     public override string ToString()
     {
         string kind = RouteTarget.TryParse(Domain, out var target) ? target.DisplayKind : "Домен";
